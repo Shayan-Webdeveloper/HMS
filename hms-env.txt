@@ -1,0 +1,20 @@
+# Local development settings for the Hospital Management System.
+# NEVER share this file or commit it to Git.
+
+# Replace ONLY the words PUT_YOUR_PASSWORD_HERE with your PostgreSQL password (keep everything else).
+DATABASE_URL="postgresql://postgres:PUT_YOUR_PASSWORD_HERE@localhost:5432/hms?schema=public"
+
+AUTH_SECRET="1gUez0x3K0fqWJkCNAHX88zY2s9EkvKS3cA93IDb7JjY-qwrWfgHPd7Io6CqDF3R"
+APP_URL="http://localhost:3000"
+SESSION_MAX_AGE_HOURS=12
+SESSION_IDLE_MINUTES=60
+
+EMAIL_PROVIDER="log"
+EMAIL_FROM="Hospital <no-reply@example.com>"
+
+FILE_STORAGE_PROVIDER="local"
+FILE_STORAGE_LOCAL_DIR="./storage/uploads"
+FILE_MAX_BYTES=10485760
+
+# Password for all demo accounts created by "npm run seed" (development only)
+SEED_DEMO_PASSWORD="DemoPass2026"
