@@ -13,7 +13,7 @@ export default async function AppLayout({ children }) {
   return (
     <AppShell
       nav={nav}
-      hospital={{ name: hospital.name }}
+      hospital={{ id: session.hospitalId, name: hospital.name }} hospitals={session.hospitals}
       user={{ name: session.user.name, email: session.user.email, roleLabel, profileHref: "/account" }}
       todayLabel={formatDate(new Date(), hospital.timezone)}
     >

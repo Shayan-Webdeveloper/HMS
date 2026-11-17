@@ -2,7 +2,7 @@ import nextCoreWebVitals from "eslint-config-next/core-web-vitals";
 
 const config = [
   ...nextCoreWebVitals,
-  { ignores: [".next/**", "node_modules/**", "storage/**", "coverage/**"] },
+  { ignores: [".next/**", ".next-*/**", ".tmp/**", "backups/**", "node_modules/**", "storage/**", "coverage/**"] },
   {
     rules: {
       "react/no-unescaped-entities": "off",

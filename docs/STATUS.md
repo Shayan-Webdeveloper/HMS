@@ -15,7 +15,7 @@ Verification at delivery: `npm run lint` clean · `npm run build` succeeds (271 
 | Audit log (auth, views, exports, clinical & financial changes) | ✅ | |
 | App shell: collapsible sidebar, breadcrumbs, Ctrl-K global search, notifications, user menu, mobile nav | ✅ | |
 | Design system: tokens, buttons, forms, tables, badges, modals, tabs, skeletons, empty/error states, toasts | ✅ | |
-| Private document upload/download with content sniffing | ✅ | Local storage provider only |
+| Private document upload/download with content sniffing | ✅ | Category-based permissions; local or private Supabase Storage provider |
 
 ## Clinical
 | Feature | Status | Notes |
@@ -83,8 +83,10 @@ Verification at delivery: `npm run lint` clean · `npm run build` succeeds (271 
 |---|---|---|
 | Responsive layouts (desktop, tablet, phone) | ✅ | Tables collapse to cards on phones |
 | Accessibility (labels, focus rings, keyboard dialogs, ARIA, reduced motion) | 🟡 | Built to WCAG 2.2 AA practices; no formal audit performed |
-| Multi-branch | 🟡 | Schema has `Hospital`/`Facility`; UI operates as a single hospital |
-| Unit tests | ✅ | 222 |
-| End-to-end workflow tests | 🟡 | HTTP-level (33) rather than browser-driven |
+| Multi-hospital (tenancy) | ✅ | Hospital-scoped data in 61 tables, isolation in app + PostgreSQL RLS, per-hospital roles, hospital switcher, Platform Administrator console. See docs/MULTI_TENANCY.md |
+| Multi-facility within a hospital | 🟡 | `Facility` exists per hospital (wards belong to a facility); no per-facility access rules |
+| Unit tests | ✅ | 235 |
+| Database isolation tests (embedded PostgreSQL) | ✅ | 23 |
+| End-to-end tests | 🟡 | HTTP-level (33 workflow + 32 multi-hospital isolation) rather than browser-driven |
 | Redirect status codes | 🟡 | Because of the route-level loading UI, page redirects/404s stream as HTTP 200 and resolve client-side (no protected content is rendered) |
 | Regulatory certification (HIPAA / GDPR / local law) | ⬜ | Requires independent review |

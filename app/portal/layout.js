@@ -12,7 +12,7 @@ export default async function PortalLayout({ children }) {
   const session = await requirePortalSession({ allowPasswordChange: true });
   const hospital = await getHospital();
   return (
-    <AppShell portal nav={PORTAL_NAV} hospital={{ name: hospital.name }}
+    <AppShell portal nav={PORTAL_NAV} hospital={{ id: session.hospitalId, name: hospital.name }} hospitals={session.hospitals}
       user={{ name: session.user.name, email: session.user.email, roleLabel: "Patient", profileHref: "/portal/profile" }}
       todayLabel={formatDate(new Date(), hospital.timezone)}>
       {children}

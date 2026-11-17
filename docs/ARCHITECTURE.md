@@ -30,11 +30,12 @@ Client components (`components/**`) only do interaction. They call the JSON API 
 | **Permissions in DB, defaults in code** | `lib/permissions/matrix.js` seeds defaults; runtime reads `RolePermission`, so the matrix can be edited in Settings without a deploy. |
 | **No clinical inference** | Lab flags compare against configured ranges only. Triage is chosen by staff. Allergy warnings are labelled as name matching. No diagnosis or treatment suggestions anywhere. |
 | **Documents as print pages + PDFKit for invoices** | Print CSS covers every document with zero dependencies; a generated PDF is provided where it's most often needed (invoices). |
+| **Multi-hospital isolation in app + database** | Every hospital-owned query goes through a hospital-scoped Prisma client that adds the hospital filter and runs under the restricted `hms_app` role with a transaction-local hospital setting, so PostgreSQL RLS enforces the same boundary (docs/MULTI_TENANCY.md). |
 | **Local private storage behind an interface** | `lib/storage` keeps files outside the web root; swap the provider for S3/Blob without touching callers. |
 
 ## Data model map
 
-- **Identity:** User, Session, PasswordResetToken, Role, Permission, RolePermission, UserRole, RateLimitBucket
+- **Identity (global):** User, Session, PasswordResetToken, Role, Permission, RateLimitBucket · **per hospital:** HospitalMembership, UserRole, RolePermission
 - **Organisation:** Hospital, Facility, Department, SystemSetting, Staff, DoctorProfile, DoctorAvailability, ScheduleException, EmployeeAttendance, LeaveRequest
 - **Patient:** Patient, PatientUserLink, EmergencyContact, Allergy, MedicalHistory, UploadedDocument
 - **Outpatient:** Appointment, QueueEntry, Encounter, ClinicalNote, Diagnosis, VitalSign, Prescription, PrescriptionItem

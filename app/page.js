@@ -4,5 +4,6 @@ import { getSession } from "@/lib/auth/session";
 export default async function Home() {
   const s = await getSession();
   if (!s) redirect("/login");
+  if (!s.hospitalId) redirect(s.isPlatformAdmin ? "/platform" : "/forbidden");
   redirect(s.isPatient ? "/portal" : "/dashboard");
 }

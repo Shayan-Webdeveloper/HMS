@@ -16,7 +16,13 @@
     "seed": "node prisma/seed.js",
     "setup:dev": "prisma migrate deploy && node prisma/seed.js",
     "create-admin": "node scripts/create-admin.js",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "create-platform-admin": "node scripts/create-platform-admin.js",
+    "storage:setup": "node scripts/storage-setup.js",
+    "test:db": "vitest run --config vitest.db.config.mjs",
+    "db:backup": "node scripts/db/backup.mjs",
+    "db:verify-migrations": "node scripts/db/verify-migrations.mjs",
+    "db:generate-tenant-sql": "node scripts/db/generate-tenant-security-sql.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
@@ -40,6 +46,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
+    "embedded-postgres": "17.11.0-beta.19",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.4.0",
     "postcss": "^8.5.29",

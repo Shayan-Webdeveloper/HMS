@@ -1,5 +1,5 @@
 import { route } from "@/lib/api/handler";
-import { portalDocuments } from "@/lib/services/dashboard";
+import { listPortalDocuments } from "@/lib/services/documents";
 
-// Metadata only; files are downloaded through /api/documents/[id], which re-checks ownership.
-export const GET = route({ portal: true }, async ({ session }) => portalDocuments(session.patientId));
+// Metadata only; files are downloaded through /api/documents/[id], which re-checks every rule.
+export const GET = route({ portal: true }, async ({ session }) => listPortalDocuments(session));

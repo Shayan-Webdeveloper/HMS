@@ -9,7 +9,8 @@ import { describe, it, expect, beforeAll } from "vitest";
 import crypto from "node:crypto";
 
 const BASE = process.env.E2E_BASE_URL || "http://localhost:3000";
-const PASSWORD = process.env.E2E_PASSWORD || "DemoPass2026";
+const PASSWORD = process.env.E2E_PASSWORD;
+if (!PASSWORD) throw new Error("Set E2E_PASSWORD to the SEED_DEMO_PASSWORD used to seed the test database.");
 const RUN = Date.now().toString(36);
 const PHONE = `+92 300 ${String(Date.now()).slice(-7)}`;
 

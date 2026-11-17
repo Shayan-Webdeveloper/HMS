@@ -1,7 +1,7 @@
 import { FileText, Download } from "lucide-react";
 import { requirePortalSession } from "@/lib/auth/session";
 import { getHospital } from "@/lib/services/settings";
-import { portalDocuments } from "@/lib/services/dashboard";
+import { listPortalDocuments } from "@/lib/services/documents";
 import { formatDateTime } from "@/lib/utils/time";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { DataTable } from "@/components/ui/DataTable";
@@ -14,7 +14,7 @@ const sizeLabel = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${M
 export default async function PortalDocumentsPage() {
   const session = await requirePortalSession();
   const h = await getHospital();
-  const docs = await portalDocuments(session.patientId);
+  const docs = await listPortalDocuments(session);
   return (
     <>
       <PageHeader title="My documents" description="Referral letters, reports and other files added to your record by the hospital. Downloads are logged." />

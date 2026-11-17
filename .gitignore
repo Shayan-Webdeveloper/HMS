@@ -1,8 +1,25 @@
+# dependencies & build output
 node_modules
 .next
-.env
-.env.local
-.env.*.local
-storage/
+.next-*/
 coverage/
 *.log
+.vercel
+
+# Local environment files and secrets — NEVER commit these.
+# Only .env.example (placeholders) is tracked.
+.env
+.env.*
+!.env.example
+*-env.txt
+*.env.txt
+*.pem
+*.key
+
+# Runtime data written by the app (uploads, mail log). Anchored to the repo root so it
+# does not hide source folders such as lib/storage/.
+/storage/
+
+# Local database backups and test databases (contain real or synthetic patient data)
+/backups/
+/.tmp/

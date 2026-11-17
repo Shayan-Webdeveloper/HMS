@@ -1,0 +1,163 @@
+# Security notes (secrets, documents, database, Supabase)
+
+> ⚠️ This system is **not certified** for HIPAA, GDPR, Pakistan's data-protection requirements or any other
+> regulatory framework. A real deployment needs independent security, privacy, clinical-safety and legal
+> review and a penetration test. The bundled data is synthetic.
+
+Multi-hospital isolation is documented separately in [MULTI_TENANCY.md](MULTI_TENANCY.md).
+
+## 1. Environment secrets and credentials
+
+| Variable | Secret? | Notes |
+|---|---|---|
+| `DATABASE_URL`, `TEST_DATABASE_URL` | **Yes** (contain the DB password) | server-only |
+| `AUTH_SECRET` | **Yes** | ≥ 32 random chars; the server refuses to start in production with a short or placeholder value (`instrumentation.js`) |
+| `SUPABASE_SERVICE_ROLE_KEY` | **Yes** (bypasses Storage/RLS policies) | server-only, never `NEXT_PUBLIC_*` |
+| `EMAIL_SERVER_PASSWORD` | **Yes** | |
+| `ADMIN_PASSWORD`, `PLATFORM_ADMIN_PASSWORD` | **Yes** (one-off bootstrap) | remove after use |
+| `SEED_DEMO_PASSWORD` | Development secret | demo accounts only; ≥ 12 chars; publicly known values are refused by the seed |
+| `APP_URL`, `EMAIL_PROVIDER`, `EMAIL_FROM`, `FILE_STORAGE_*`, `SUPABASE_URL`, `SUPABASE_STORAGE_BUCKET`, `SESSION_*`, `ALLOW_DEMO_ACCOUNTS` | No | ordinary configuration |
+
+Changes made:
+
+* `hms-env.txt` (a local settings file containing a real-looking `AUTH_SECRET` and the demo password) was
+  **tracked in the public Git repository**. It is now untracked and ignored (`*-env.txt`); the local copy was
+  left in place. `.gitignore` now ignores `.env*` (except `.env.example`), `*.pem`, `*.key`, `/storage/`,
+  `/backups/`, `.tmp/`, `.vercel`.
+* The old ignore rule `storage/` also matched `lib/storage/`, so **the storage module had never been
+  committed** and a fresh clone could not build. The rule is now anchored (`/storage/`) and the module is
+  committed.
+* `.env.example` contains placeholders only and documents which values are secrets.
+* The end-to-end test no longer contains a hard-coded fallback password; `docs/CONVENTIONS.md` no longer
+  names the demo password.
+* **Demo vs production credentials:** demo accounts (`@demo.hms`) are refused at sign-in when
+  `NODE_ENV=production` unless `ALLOW_DEMO_ACCOUNTS=true` is set explicitly (only for a public *demo* with
+  synthetic data). `create-admin` / `create-platform-admin` refuse `@demo.hms` addresses. The seed refuses
+  short or publicly known demo passwords and refuses to run with `NODE_ENV=production`.
+
+### Exposure assessment and rotation (checked without printing any value)
+
+| Value | Where it leaked | Still in use? | Action |
+|---|---|---|---|
+| `AUTH_SECRET` in `hms-env.txt` | Public GitHub history (commit `be45684`) | **No** — the local `.env` uses a different value, and no code currently signs anything with `AUTH_SECRET` | Treat as burned. Never reuse it. |
+| `AUTH_SECRET` in the local `.env` | Equals the public placeholder from `.env.example` | Local only | **Rotate**: set a new random value locally and in Vercel. |
+| `SEED_DEMO_PASSWORD` in `hms-env.txt` (also hard-coded in the old e2e test) | Public GitHub history | **No** — verified against every account hash in the live database: it matches none | Treat as public; the seed now refuses it. |
+| Supabase database password | Not committed (only in the untracked `.env`) | Yes | Rotate if `.env` was ever shared; otherwise no action. The `DATABASE_URL` in `hms-env.txt` contained only a placeholder password. |
+
+### Git history
+
+Removing a file from the latest commit does **not** remove it from earlier commits, clones, forks or
+GitHub's caches. Because nothing in the leaked file is still in use, rotating/abandoning the values is
+sufficient and **history was not rewritten**. If you still want it purged:
+
+```bash
+pip install git-filter-repo
+git filter-repo --invert-paths --path hms-env.txt   # rewrites every commit hash
+git push --force --all && git push --force --tags
+```
+
+Consequences: every commit id changes; every collaborator must re-clone (old clones would re-introduce
+the file); open PRs break; GitHub may keep cached views until you ask GitHub Support to purge them; forks
+are unaffected. Do this only with explicit agreement — it was not done automatically.
+
+## 2. Document authorisation
+
+Before: anyone with `patients:read` **or** `clinical:read` could download every patient document, and any
+one of five unrelated permissions allowed uploading any category.
+
+Now (`lib/services/documents.js`, rules in `lib/permissions/documents.js`):
+
+| Category | Permission group | Read (default roles) | Upload (default roles) |
+|---|---|---|---|
+| Referral, Discharge summary | `documents.clinical` | Doctor, Nurse, Super Admin | Doctor, Receptionist (referrals brought in), Super Admin |
+| Lab report | `documents.lab` | Lab technician, Doctor, Nurse, Super Admin | Lab technician, Super Admin |
+| Imaging report / attachments | `documents.imaging` | Radiology, Doctor, Nurse, Super Admin | Radiology, Super Admin |
+| Insurance | `documents.insurance` | Accountant, Receptionist, Hospital Admin, Super Admin | same |
+| ID document | `documents.identity` | Receptionist, Hospital Admin, Super Admin | same |
+| Consent form | `documents.consent` | Receptionist, Doctor, Nurse, Hospital Admin, Super Admin | Receptionist, Doctor, Nurse, Hospital Admin, Super Admin |
+| Other | `documents.other` | Doctor, Nurse, Hospital Admin, Super Admin | Receptionist, Doctor, Hospital Admin, Super Admin |
+
+* `patients:read` / `clinical:read` alone grant **no** document access. Pharmacists and HR have none.
+* Every rule also requires the **same hospital** (hospital-scoped lookup + RLS + hospital-prefixed storage key).
+* Patients (portal) only get documents of their own verified record; imaging attachments only once the
+  report is verified.
+* Listings (patient profile, imaging attachments, portal) only show what the user may download — file
+  names can be sensitive too. Upload pickers only offer allowed categories.
+* All refusals of a download are `404` (existence is not revealed) and are audited (`document.download_denied`).
+* Uploads: content-sniffed PDF/PNG/JPEG only, size limit, safe file names, private storage, cleanup of the
+  stored object if the database write fails. Downloads carry `Content-Security-Policy: sandbox`, `nosniff`
+  and `Cache-Control: private, no-store`.
+* Migration `20261117000400_document_permissions` adds the permissions and these default grants in every
+  existing hospital; administrators can adjust them per hospital in Settings → Roles.
+
+## 3. Supabase database security
+
+Findings (live database, read-only inspection):
+
+* The app connects with Prisma as `postgres` through the Supabase pooler. That role has **BYPASSRLS**, so
+  RLS was never applied to the application. No browser code talks to Supabase (no `@supabase/*` package,
+  no anon key); the Supabase Data API is **not used** by the application.
+* 68 tables with RLS enabled and **no policies** (deny-all for API roles) — but `anon` and `authenticated`
+  held every table privilege including `TRUNCATE` (which RLS does not restrict), and Supabase default
+  privileges granted them `ALL` on future tables.
+* `public.rls_auto_enable()` is Supabase's `SECURITY DEFINER` event-trigger function (event trigger
+  `ensure_rls`) that enables RLS on new tables. It was executable by `PUBLIC`, `anon` and `authenticated`.
+  Because it returns `event_trigger`, PostgreSQL refuses to call it directly, so the practical risk was low.
+
+Changes:
+
+* `20261117000300_supabase_api_privileges`: revokes all table/sequence/function privileges of `anon` and
+  `authenticated` in `public` and their default privileges for objects created by the migration role;
+  removes `PUBLIC`/`anon`/`authenticated` `EXECUTE` on `rls_auto_enable()` **without** dropping the
+  function or its event trigger (tested: RLS is still auto-enabled on new tables). `service_role`,
+  `postgres` and `supabase_*` are untouched. The migration is a no-op on plain PostgreSQL.
+* `20261117000200_tenant_isolation_rls`: real RLS policies for hospital isolation, enforced through the
+  restricted role `hms_app` (see MULTI_TENANCY.md). No blanket "allow all" policies on hospital data.
+
+Recommended manual step: in the Supabase dashboard → Project Settings → Data API, remove `public` from the
+exposed schemas (or disable the Data API) since the app does not use it. Default privileges owned by
+`supabase_admin` cannot be changed by the `postgres` role; the revoke above covers objects created by the
+app's migrations.
+
+## 4. Referential integrity
+
+`20261117000000_actor_foreign_keys` adds foreign keys for 32 reference columns that had none
+(`createdById`, `recordedById`, `authorId`, `finalizedById`, `decidedById`, `updatedById`, `assignedById`,
+`administeredById`, `collectedById`, `enteredById`, `validatedById`, `releasedById`, `requestedById`,
+`reportedById`, `verifiedById`, `receivedById`, `approvedById`, `performedById`, `uploadedById`,
+`triagedById`, `assignedClinicianId` → `User`; `Procedure.surgeonId` → `DoctorProfile`;
+`NursingNote.admissionId` → `Admission`; `Patient.mergedIntoId` → `Patient`).
+
+* `ON DELETE RESTRICT` (users and clinical rows are never hard-deleted, attribution must never be lost),
+  `ON UPDATE CASCADE`.
+* The migration first checks every column for orphaned values and **aborts without changing anything**,
+  listing the offending columns, if any exist. Nothing is deleted or nulled automatically. The live data
+  had **0** orphans.
+* Hospital-owned rows can only reference rows of the same hospital (triggers) and every hospital-owned
+  table references `Hospital`.
+
+## 5. Indexes
+
+* **Unindexed foreign keys: 44 → 0.** Every foreign key now has an index whose leading columns are the FK
+  columns (measured with a catalogue query before and after).
+* **Tenant indexes:** list/filter indexes now lead with `hospitalId` (e.g. `Patient(hospitalId, status,
+  registeredAt)`, `Appointment(hospitalId, startsAt)`), replacing the old global ones; each hospital-owned
+  table has an index usable for its `hospitalId` foreign key and RLS predicate.
+* **Unused indexes were not dropped.** The live database's statistics have never been reset and it holds a
+  small demo data set with little traffic, so "never scanned" is not evidence that an index is useless.
+  The flagged indexes back real query paths (status filters, date ranges, look-ups by patient/doctor) and
+  unique constraints. Re-evaluate after a few weeks of real traffic with `pg_stat_user_indexes`.
+* Redundant indexes were avoided (e.g. no separate `(hospitalId)` index where a unique/composite index
+  already starts with `hospitalId`). Write overhead: about 110 additional B-tree indexes in total, which is
+  modest for this workload; the hottest write paths (appointments, invoices, stock ledger) each gained 2–4.
+
+## 6. Remaining risks / known limitations
+
+* The connection role still has `BYPASSRLS`; `systemPrisma` uses it for authentication and platform
+  administration. A bug in that (small, reviewable) code is not stopped by RLS. Using a dedicated login role
+  without `BYPASSRLS` for the app and keeping `postgres` for migrations would remove this.
+* Standalone queries cost an extra round trip for the database context (see MULTI_TENANCY.md).
+* `User` rows are global: a hospital administrator can rename/reset only accounts that belong *only* to
+  their hospital; shared accounts are managed by a Platform Administrator.
+* Local file storage is not persistent on serverless hosts — use `FILE_STORAGE_PROVIDER=supabase` on Vercel.
+* No malware scanning of uploads; no DICOM/PACS.

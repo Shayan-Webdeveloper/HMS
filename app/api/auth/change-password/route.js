@@ -1,5 +1,5 @@
 import { route } from "@/lib/api/handler";
-import { prisma } from "@/lib/db/prisma";
+import { systemPrisma as prisma } from "@/lib/db/prisma"; // global identity tables, filtered by user id
 import { changePasswordSchema } from "@/lib/validation/auth";
 import { hashPassword, verifyPassword, validatePasswordStrength } from "@/lib/auth/password";
 import { audit } from "@/lib/audit";

@@ -17,6 +17,7 @@ import { EmptyState, ForbiddenState } from "@/components/ui/States";
 import { PatientActions } from "@/components/patients/PatientActions";
 import { AllergyPanel } from "@/components/patients/AllergyPanel";
 import { FileUploader } from "@/components/shared/FileUploader";
+import { listPatientDocuments, readableCategories, uploadableCategories } from "@/lib/services/documents";
 
 export const metadata = { title: "Patient" };
 
@@ -264,11 +265,16 @@ async function TabContent({ tab, p, tz, session, currency, clinical }) {
       ]} />;
     }
     case "documents": {
-      const docs = await prisma.uploadedDocument.findMany({ where: { patientId: p.id }, orderBy: { createdAt: "desc" } });
+      // Only categories this user may read are listed (file names can be sensitive too); uploads offer
+      // only the categories they may upload. Downloads re-check everything server-side.
+      const docs = await listPatientDocuments(p.id, session);
+      const uploadCats = uploadableCategories(session);
+      const readCats = readableCategories(session);
       return (
         <div>
-          {can(session, ["patients:update", "encounters:create"]) && <div className="p-4 border-b border-border"><FileUploader patientId={p.id} /></div>}
-          <DataTable rows={docs} empty={<EmptyState icon={FileText} title="No documents" description="Uploaded referrals, reports and consent forms appear here." />} columns={[
+          {uploadCats.length > 0 && <div className="p-4 border-b border-border"><FileUploader patientId={p.id} categories={uploadCats} /></div>}
+          {readCats.length === 0 && <p className="px-5 py-3 text-[13px] text-muted border-b border-border">Your role does not include access to patient documents.</p>}
+          <DataTable rows={docs} empty={<EmptyState icon={FileText} title="No documents" description="Uploaded referrals, reports and consent forms you are allowed to see appear here." />} columns={[
             { key: "name", label: "File", render: (d) => <a className="text-primary font-medium hover:underline" href={`/api/documents/${d.id}`} target="_blank" rel="noopener noreferrer">{d.originalName}</a> },
             { key: "cat", label: "Category", render: (d) => d.category.replace(/_/g, " ").toLowerCase() },
             { key: "size", label: "Size", render: (d) => `${(d.sizeBytes / 1024).toFixed(0)} KB` },

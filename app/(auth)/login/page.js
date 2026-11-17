@@ -6,7 +6,7 @@ export const metadata = { title: "Sign in" };
 
 export default async function LoginPage({ searchParams }) {
   const s = await getSession();
-  if (s) redirect(s.isPatient ? "/portal" : "/dashboard");
+  if (s) redirect(!s.hospitalId ? (s.isPlatformAdmin ? "/platform" : "/forbidden") : s.isPatient ? "/portal" : "/dashboard");
   const sp = await searchParams;
   return <LoginForm expired={sp?.expired === "1"} showDemo={process.env.NODE_ENV !== "production"} />;
 }

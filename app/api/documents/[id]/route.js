@@ -1,26 +1,20 @@
 import { route } from "@/lib/api/handler";
-import { prisma } from "@/lib/db/prisma";
-import { getFile } from "@/lib/storage";
-import { audit } from "@/lib/audit";
-import { can } from "@/lib/auth/session";
-import { notFound, forbidden } from "@/lib/errors";
+import { getDocumentForDownload } from "@/lib/services/documents";
+import { notFound } from "@/lib/errors";
 
-// Authorised download. Staff need clinical/patient read access; patients may only fetch their own documents.
+// Authorised download for staff AND portal users. Rules (lib/services/documents.js): same hospital,
+// the category's read permission for staff, own verified record for patients. Every refusal is a 404
+// so the existence of other hospitals' or other patients' documents is never revealed.
 export const GET = route({ public: true }, async ({ params, session, ip }) => {
-  if (!session) throw forbidden();
-  const doc = await prisma.uploadedDocument.findUnique({ where: { id: params.id } });
-  if (!doc) throw notFound();
-  const staffOk = !session.isPatient && can(session, ["clinical:read", "patients:read"]);
-  const patientOk = session.patientId && doc.patientId === session.patientId;
-  if (!staffOk && !patientOk) throw notFound(); // do not reveal existence
-  const buf = await getFile(doc.storageKey);
-  await audit({ userId: session.user.id, action: "document.download", entityType: "UploadedDocument", entityId: doc.id, ipAddress: ip });
+  if (!session || !session.hospitalId) throw notFound();
+  const { doc, buf } = await getDocumentForDownload(params.id, session, ip);
   return new Response(buf, {
     headers: {
       "Content-Type": doc.mimeType,
-      "Content-Disposition": `inline; filename="${doc.originalName.replace(/"/g, "")}"`,
+      "Content-Disposition": `inline; filename="${doc.originalName.replace(/["\r\n]/g, "")}"`,
       "Cache-Control": "private, no-store",
       "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
     },
   });
 });

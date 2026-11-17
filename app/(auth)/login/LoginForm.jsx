@@ -19,7 +19,7 @@ export default function LoginForm({ expired, showDemo }) {
     setError("");
     try {
       const r = await api("/api/auth/login", { method: "POST", body: values });
-      window.location.assign(r.data.mustChangePassword ? "/account?first=1" : r.data.redirect);
+      window.location.assign(r.data.redirect);
     } catch (e) {
       setError(e.message);
     }

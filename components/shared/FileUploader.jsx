@@ -6,10 +6,13 @@ import { toast } from "sonner";
 
 const CATS = [["REFERRAL", "Referral"], ["LAB_REPORT", "Lab report"], ["IMAGING_REPORT", "Imaging report"], ["DISCHARGE_SUMMARY", "Discharge summary"], ["INSURANCE", "Insurance"], ["ID_DOCUMENT", "ID document"], ["CONSENT", "Consent form"], ["OTHER", "Other"]];
 
-export function FileUploader({ patientId }) {
+// `categories`: the document categories this user may upload (decided on the server). The API
+// re-checks the permission for the chosen category on every upload.
+export function FileUploader({ patientId, categories }) {
   const router = useRouter();
   const input = useRef(null);
-  const [cat, setCat] = useState("OTHER");
+  const options = CATS.filter(([v]) => !categories || categories.includes(v));
+  const [cat, setCat] = useState(options.some(([v]) => v === "OTHER") ? "OTHER" : options[0]?.[0] ?? "");
   const [busy, setBusy] = useState(false);
   async function upload(file) {
     if (!file) return;
@@ -29,7 +32,7 @@ export function FileUploader({ patientId }) {
   return (
     <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
       <select className="select sm:w-48" value={cat} onChange={(e) => setCat(e.target.value)} aria-label="Document category">
-        {CATS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
       </select>
       <input ref={input} type="file" accept="application/pdf,image/png,image/jpeg" className="sr-only" id="doc-upload" onChange={(e) => upload(e.target.files?.[0])} />
       <label htmlFor="doc-upload" className={`btn btn-primary ${busy ? "opacity-60 pointer-events-none" : ""}`}>

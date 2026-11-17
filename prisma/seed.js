@@ -3,11 +3,20 @@
 //   npm run seed                  (wipes and re-creates demo data in DATABASE_URL)
 //   SEED_DEMO_PASSWORD=...        password for every demo account (random if unset; printed once)
 //
+// Multi-hospital: seeds TWO independent demo hospitals (to demonstrate and test isolation) and one
+// Platform Administrator. Each hospital is seeded inside its own hospital context through the
+// hospital-scoped client, i.e. under the same row-level security rules as the application.
+//   Demo General Hospital (DGH): admin@demo.hms, dr.khan@demo.hms, … (full data set)
+//   Central Hospital (CEN):      central.admin@demo.hms, central.dr.khan@demo.hms, … (smaller)
+//   Platform Administrator:      platform@demo.hms
+// Demo accounts are refused at sign-in in production unless ALLOW_DEMO_ACCOUNTS=true.
+//
 import "dotenv/config";
 import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import { createPrismaClient } from "../lib/db/client-factory.js";
-import { ROLES, PERMISSIONS } from "../lib/permissions/matrix.js";
+import { createTenantClient, runWithTenant } from "../lib/db/tenant-client.js";
+import { ensurePermissionCatalogue, provisionHospital } from "../lib/tenancy/provision.js";
 import { newId } from "../lib/ids.js";
 import { calcInvoiceTotals, calcLine } from "../lib/utils/money.js";
 import { zonedToUtc, addDays, todayInTz, weekdayOf } from "../lib/utils/time.js";
@@ -19,7 +28,25 @@ if (process.env.NODE_ENV === "production" && !process.argv.includes("--i-underst
   process.exit(1);
 }
 
-const prisma = createPrismaClient(process.env.SEED_DATABASE_URL || process.env.DATABASE_URL);
+// base: owner role (wipe, global catalogue, hospital provisioning). prisma: hospital-scoped client
+// (requires an explicit runWithTenant context — there is no request to derive it from).
+const base = createPrismaClient(process.env.SEED_DATABASE_URL || process.env.DATABASE_URL);
+const prisma = createTenantClient(base);
+
+// Publicly known / trivially guessable values are refused so a leaked demo password can never be
+// reused (the old default was committed to the repository and must be considered public).
+// Stored as SHA-256 hashes so the leaked value itself is never written into the repository again.
+const KNOWN_PUBLIC_PASSWORD_SHA256 = [
+  "cc15b267fe6b543d4ad6236567a5267be0e60bce787f92e7182c6cbd0bc3f46f",
+  "ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f",
+  "008c70392e3abfbd0fa47bbc2ed96aa99bd49e159727fcba0f2e6abeb3a9d601",
+];
+const isKnownPublic = (pw) => KNOWN_PUBLIC_PASSWORD_SHA256.includes(crypto.createHash("sha256").update(pw).digest("hex"));
+
+const HOSPITALS = [
+  { code: "DGH", name: "Demo General Hospital", emailPrefix: "", patients: 32, fromDay: -30, toDay: 7, address: "12 Example Road, Lahore (DEMONSTRATION DATA)", phone: "+92 42 0000 0000", email: "info@demo.hms" },
+  { code: "CEN", name: "Central Hospital (Demo)", emailPrefix: "central.", patients: 10, fromDay: -6, toDay: 3, address: "45 Sample Avenue, Karachi (DEMONSTRATION DATA)", phone: "+92 21 0000 0000", email: "info.central@demo.hms" },
+];
 
 // Deterministic pseudo-random generator so the demo data is reproducible.
 let seedState = 20261009;
@@ -28,9 +55,9 @@ const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
 const int = (a, b) => a + Math.floor(rnd() * (b - a + 1));
 
 async function wipe() {
-  const tables = await prisma.$queryRaw`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename NOT LIKE '_prisma%'`;
+  const tables = await base.$queryRaw`SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename NOT LIKE '_prisma%'`;
   const list = tables.map((t) => `"public"."${t.tablename}"`).join(", ");
-  if (list) await prisma.$executeRawUnsafe(`TRUNCATE ${list} RESTART IDENTITY CASCADE`);
+  if (list) await base.$executeRawUnsafe(`TRUNCATE ${list} RESTART IDENTITY CASCADE`);
 }
 
 const FIRST_M = ["Ahmed", "Bilal", "Usman", "Hamza", "Imran", "Kamran", "Faisal", "Zubair", "Omar", "Saad", "Hassan", "Junaid", "Tariq", "Adeel", "Waqas"];
@@ -40,19 +67,42 @@ const CITIES = ["Lahore", "Karachi", "Islamabad", "Rawalpindi", "Faisalabad", "M
 
 async function main() {
   console.log("Seeding DEMONSTRATION DATA…");
-  await wipe();
-
   const demoPassword = process.env.SEED_DEMO_PASSWORD || crypto.randomBytes(9).toString("base64url") + "7a";
+  if (demoPassword.length < 12 || isKnownPublic(demoPassword)) {
+    throw new Error("SEED_DEMO_PASSWORD must be at least 12 characters and must not be a publicly known value.");
+  }
+  await wipe();
   const passwordHash = await bcrypt.hash(demoPassword, 10);
+  await ensurePermissionCatalogue(base);
+  const roleRows = Object.fromEntries((await base.role.findMany()).map((r) => [r.key, r]));
 
-  // ── Hospital & settings ──────────────────────────────────
-  const hospital = await prisma.hospital.create({
-    data: { name: "Demo General Hospital", code: "DGH", address: "12 Example Road, Lahore (DEMONSTRATION DATA)", phone: "+92 42 0000 0000", email: "info@demo.hms", timezone: TZ, currency: "PKR", locale: "en-PK" },
-  });
-  const facility = await prisma.facility.create({ data: { hospitalId: hospital.id, name: "Main Campus", code: "MAIN" } });
+  for (const def of HOSPITALS) {
+    const hospital = await provisionHospital(base, { name: def.name, code: def.code, timezone: TZ, currency: "PKR", locale: "en-PK", address: def.address, phone: def.phone, email: def.email });
+    // One database transaction per hospital, carrying that hospital's context (role hms_app + RLS).
+    await runWithTenant({ hospitalId: hospital.id }, () =>
+      prisma.$transaction(() => seedHospital(hospital, def, { passwordHash, roleRows }), { timeout: 30 * 60 * 1000, maxWait: 60 * 1000 }));
+    console.log(`  ✔ ${def.name} (${def.code}) seeded`);
+  }
+
+  // Platform Administrator (above hospitals; no hospital membership, no access to hospital records).
+  const platformAdmin = await base.user.create({ data: { email: "platform@demo.hms", name: "Platform Administrator (demo)", passwordHash, platformRole: "PLATFORM_ADMIN" } });
+  await base.auditLog.create({ data: { hospitalId: null, userId: platformAdmin.id, action: "system.seed", entityType: "System", metadata: { note: "Demonstration data seeded", hospitals: HOSPITALS.map((h) => h.code) } } });
+
+  console.log("\n✔ Demo data ready (DEMONSTRATION DATA — synthetic, not real patients).");
+  console.log("  Demo General Hospital: admin@demo.hms, hadmin@demo.hms, reception@demo.hms, dr.khan@demo.hms, dr.fatima@demo.hms,");
+  console.log("            nurse@demo.hms, lab@demo.hms, radiology@demo.hms, pharmacy@demo.hms, billing@demo.hms, hr@demo.hms, patient@demo.hms");
+  console.log("  Central Hospital:      the same names prefixed with \"central.\" (e.g. central.admin@demo.hms, central.patient@demo.hms)");
+  console.log("  Platform Administrator: platform@demo.hms");
+  if (process.env.SEED_DEMO_PASSWORD) console.log("  Password: value of SEED_DEMO_PASSWORD");
+  else console.log(`  Generated password for all demo accounts (shown once): ${demoPassword}`);
+}
+
+/** Seed one hospital. Runs inside that hospital's context and transaction; returns the admin user id. */
+async function seedHospital(hospital, def, { passwordHash, roleRows }) {
+  const mail = (local) => `${def.emailPrefix}${local}@demo.hms`;
+  const facility = await prisma.facility.findFirst({ where: { code: "MAIN" } });
   await prisma.systemSetting.createMany({
     data: [
-      { hospitalId: hospital.id, key: "hospital.profile", value: { name: "Demo General Hospital", logoText: "DGH" } },
       { hospitalId: hospital.id, key: "billing", value: { taxRatePercent: "0", paymentMethods: ["CASH", "CARD", "BANK_TRANSFER"], maxDiscountPercentWithoutApproval: 10 } },
       { hospitalId: hospital.id, key: "imaging.catalog", value: { items: [
         { code: "XR-CHEST", modality: "XRAY", bodyPart: "Chest PA", price: "1500.00" },
@@ -70,17 +120,7 @@ async function main() {
     ],
   });
 
-  // ── Roles & permissions ──────────────────────────────────
-  const permRows = {};
-  for (const [key, description] of Object.entries(PERMISSIONS)) {
-    const [resource, action] = key.split(":");
-    permRows[key] = await prisma.permission.create({ data: { key, resource, action, description } });
-  }
-  const roleRows = {};
-  for (const [key, r] of Object.entries(ROLES)) {
-    roleRows[key] = await prisma.role.create({ data: { key, name: r.name, description: r.description } });
-    await prisma.rolePermission.createMany({ data: r.permissions.map((p) => ({ roleId: roleRows[key].id, permissionId: permRows[p].id })) });
-  }
+  // Roles, permissions and this hospital's default grants were created by provisionHospital().
 
   // ── Departments ──────────────────────────────────────────
   const deptDefs = [
@@ -93,7 +133,8 @@ async function main() {
 
   // ── Users & staff ────────────────────────────────────────
   async function makeUser({ email, first, last, role, deptCode, position, doctor }) {
-    const user = await prisma.user.create({ data: { email, name: `${first} ${last}`, passwordHash, roles: { create: [{ roleId: roleRows[role].id }] } } });
+    // Account + membership of THIS hospital + role in this hospital (hospitalId from the context).
+    const user = await prisma.user.create({ data: { email, name: `${first} ${last}`, passwordHash, memberships: { create: {} }, roles: { create: [{ roleId: roleRows[role].id }] } } });
     if (role === "PATIENT") return { user };
     const staff = await prisma.staff.create({
       data: {
@@ -115,22 +156,22 @@ async function main() {
     return { user, staff, doctorProfile };
   }
 
-  const admin = await makeUser({ email: "admin@demo.hms", first: "System", last: "Administrator", role: "SUPER_ADMIN", deptCode: "ADM", position: "IT Administrator" });
-  const hadmin = await makeUser({ email: "hadmin@demo.hms", first: "Nadia", last: "Rehman", role: "HOSPITAL_ADMIN", deptCode: "ADM", position: "Hospital Administrator" });
-  const reception = await makeUser({ email: "reception@demo.hms", first: "Sana", last: "Javed", role: "RECEPTIONIST", deptCode: "ADM", position: "Front Desk Officer" });
+  const admin = await makeUser({ email: mail("admin"), first: "System", last: "Administrator", role: "SUPER_ADMIN", deptCode: "ADM", position: "IT Administrator" });
+  const hadmin = await makeUser({ email: mail("hadmin"), first: "Nadia", last: "Rehman", role: "HOSPITAL_ADMIN", deptCode: "ADM", position: "Hospital Administrator" });
+  const reception = await makeUser({ email: mail("reception"), first: "Sana", last: "Javed", role: "RECEPTIONIST", deptCode: "ADM", position: "Front Desk Officer" });
   const doctors = [
-    await makeUser({ email: "dr.khan@demo.hms", first: "Imran", last: "Khan", role: "DOCTOR", deptCode: "GM", position: "Consultant Physician", doctor: { specialty: "Internal Medicine", qualifications: "MBBS, FCPS (Medicine)", license: "PMDC-DEMO-1001", fee: "2500.00" } }),
-    await makeUser({ email: "dr.fatima@demo.hms", first: "Fatima", last: "Siddiqui", role: "DOCTOR", deptCode: "PED", position: "Consultant Pediatrician", doctor: { specialty: "Pediatrics", qualifications: "MBBS, FCPS (Paeds)", license: "PMDC-DEMO-1002", fee: "2000.00", slot: 20 } }),
-    await makeUser({ email: "dr.ahmed@demo.hms", first: "Bilal", last: "Ahmed", role: "DOCTOR", deptCode: "CAR", position: "Consultant Cardiologist", doctor: { specialty: "Cardiology", qualifications: "MBBS, FCPS (Cardiology)", license: "PMDC-DEMO-1003", fee: "3500.00", slot: 20 } }),
-    await makeUser({ email: "dr.malik@demo.hms", first: "Ayesha", last: "Malik", role: "DOCTOR", deptCode: "ORT", position: "Orthopedic Surgeon", doctor: { specialty: "Orthopedic Surgery", qualifications: "MBBS, MS (Ortho)", license: "PMDC-DEMO-1004", fee: "3000.00" } }),
-    await makeUser({ email: "dr.raza@demo.hms", first: "Hassan", last: "Raza", role: "DOCTOR", deptCode: "ER", position: "Emergency Physician", doctor: { specialty: "Emergency Medicine", qualifications: "MBBS, FCPS (EM)", license: "PMDC-DEMO-1005", fee: "2000.00" } }),
+    await makeUser({ email: mail("dr.khan"), first: "Imran", last: "Khan", role: "DOCTOR", deptCode: "GM", position: "Consultant Physician", doctor: { specialty: "Internal Medicine", qualifications: "MBBS, FCPS (Medicine)", license: "PMDC-DEMO-1001", fee: "2500.00" } }),
+    await makeUser({ email: mail("dr.fatima"), first: "Fatima", last: "Siddiqui", role: "DOCTOR", deptCode: "PED", position: "Consultant Pediatrician", doctor: { specialty: "Pediatrics", qualifications: "MBBS, FCPS (Paeds)", license: "PMDC-DEMO-1002", fee: "2000.00", slot: 20 } }),
+    await makeUser({ email: mail("dr.ahmed"), first: "Bilal", last: "Ahmed", role: "DOCTOR", deptCode: "CAR", position: "Consultant Cardiologist", doctor: { specialty: "Cardiology", qualifications: "MBBS, FCPS (Cardiology)", license: "PMDC-DEMO-1003", fee: "3500.00", slot: 20 } }),
+    await makeUser({ email: mail("dr.malik"), first: "Ayesha", last: "Malik", role: "DOCTOR", deptCode: "ORT", position: "Orthopedic Surgeon", doctor: { specialty: "Orthopedic Surgery", qualifications: "MBBS, MS (Ortho)", license: "PMDC-DEMO-1004", fee: "3000.00" } }),
+    await makeUser({ email: mail("dr.raza"), first: "Hassan", last: "Raza", role: "DOCTOR", deptCode: "ER", position: "Emergency Physician", doctor: { specialty: "Emergency Medicine", qualifications: "MBBS, FCPS (EM)", license: "PMDC-DEMO-1005", fee: "2000.00" } }),
   ];
-  const nurse = await makeUser({ email: "nurse@demo.hms", first: "Rabia", last: "Butt", role: "NURSE", deptCode: "NUR", position: "Charge Nurse" });
-  const labTech = await makeUser({ email: "lab@demo.hms", first: "Kamran", last: "Mirza", role: "LAB_TECHNICIAN", deptCode: "LAB", position: "Senior Lab Technologist" });
-  const radTech = await makeUser({ email: "radiology@demo.hms", first: "Omar", last: "Sheikh", role: "RADIOLOGIST", deptCode: "RAD", position: "Radiologist" });
-  const pharmacist = await makeUser({ email: "pharmacy@demo.hms", first: "Hira", last: "Qureshi", role: "PHARMACIST", deptCode: "PHR", position: "Pharmacist" });
-  const accountant = await makeUser({ email: "billing@demo.hms", first: "Faisal", last: "Iqbal", role: "ACCOUNTANT", deptCode: "FIN", position: "Billing Officer" });
-  const hr = await makeUser({ email: "hr@demo.hms", first: "Maryam", last: "Abbasi", role: "HR_MANAGER", deptCode: "ADM", position: "HR Manager" });
+  const nurse = await makeUser({ email: mail("nurse"), first: "Rabia", last: "Butt", role: "NURSE", deptCode: "NUR", position: "Charge Nurse" });
+  const labTech = await makeUser({ email: mail("lab"), first: "Kamran", last: "Mirza", role: "LAB_TECHNICIAN", deptCode: "LAB", position: "Senior Lab Technologist" });
+  const radTech = await makeUser({ email: mail("radiology"), first: "Omar", last: "Sheikh", role: "RADIOLOGIST", deptCode: "RAD", position: "Radiologist" });
+  const pharmacist = await makeUser({ email: mail("pharmacy"), first: "Hira", last: "Qureshi", role: "PHARMACIST", deptCode: "PHR", position: "Pharmacist" });
+  const accountant = await makeUser({ email: mail("billing"), first: "Faisal", last: "Iqbal", role: "ACCOUNTANT", deptCode: "FIN", position: "Billing Officer" });
+  const hr = await makeUser({ email: mail("hr"), first: "Maryam", last: "Abbasi", role: "HR_MANAGER", deptCode: "ADM", position: "HR Manager" });
   // Staff without logins
   for (let i = 0; i < 6; i++) {
     const sex = rnd() > 0.5;
@@ -140,7 +181,7 @@ async function main() {
   // ── Patients ─────────────────────────────────────────────
   const patients = [];
   const today = todayInTz(TZ);
-  for (let i = 0; i < 32; i++) {
+  for (let i = 0; i < def.patients; i++) {
     const female = i % 2 === 0;
     const first = female ? FIRST_F[i % FIRST_F.length] : FIRST_M[i % FIRST_M.length];
     const last = LAST[(i * 7) % LAST.length];
@@ -163,7 +204,7 @@ async function main() {
     patients.push(p);
   }
   // Patient portal account linked to the first patient
-  const portalUser = await makeUser({ email: "patient@demo.hms", first: patients[0].firstName, last: patients[0].lastName, role: "PATIENT" });
+  const portalUser = await makeUser({ email: mail("patient"), first: patients[0].firstName, last: patients[0].lastName, role: "PATIENT" });
   await prisma.patientUserLink.create({ data: { patientId: patients[0].id, userId: portalUser.user.id, verifiedAt: new Date() } });
 
   // ── Lab catalogue ────────────────────────────────────────
@@ -246,7 +287,7 @@ async function main() {
 
   const diagnoses = [["J06.9", "Acute upper respiratory infection"], ["I10", "Essential (primary) hypertension"], ["E11.9", "Type 2 diabetes mellitus without complications"], ["K21.9", "Gastro-oesophageal reflux disease"], ["M54.5", "Low back pain"], ["J45.9", "Asthma, unspecified"], ["A09", "Infectious gastroenteritis"]];
   let apptCount = 0;
-  for (let dayOffset = -30; dayOffset <= 7; dayOffset++) {
+  for (let dayOffset = def.fromDay; dayOffset <= def.toDay; dayOffset++) {
     const date = addDays(today, dayOffset);
     const wd = weekdayOf(date);
     if (wd === 0) continue;
@@ -352,7 +393,7 @@ async function main() {
   }
   // a past, discharged admission
   {
-    const p = patients[11], bed = beds.GMW[3];
+    const p = patients[11 % patients.length], bed = beds.GMW[3];
     const adm = await prisma.admission.create({ data: { admissionNo: await newId(prisma, "admission"), patientId: p.id, doctorId: doctors[0].doctorProfile.id, reason: "Acute gastroenteritis with dehydration", status: "DISCHARGED", admittedAt: new Date(Date.now() - 12 * 86400000), dischargedAt: new Date(Date.now() - 9 * 86400000), dischargeCondition: "Improved", dischargeSummary: "Rehydrated with IV fluids; tolerating oral intake. (Synthetic demonstration summary.)" } });
     await prisma.bedAssignment.create({ data: { admissionId: adm.id, bedId: bed.id, startedAt: adm.admittedAt, endedAt: adm.dischargedAt } });
   }
@@ -363,7 +404,7 @@ async function main() {
   const er = [["AMBULANCE", "Chest pain radiating to left arm", "ORANGE", "UNDER_TREATMENT"], ["WALK_IN", "Laceration to right hand", "GREEN", "TRIAGED"], ["WALK_IN", "High-grade fever, child", null, "WAITING_TRIAGE"]];
   for (const [mode, complaint, cat, status] of er) {
     const v = await prisma.emergencyVisit.create({ data: { visitNo: await newId(prisma, "emergency"), patientId: pick(patients).id, arrivalMode: mode, presentingComplaint: complaint, triageCategory: cat, triagedById: cat ? nurse.user.id : null, assignedClinicianId: status === "UNDER_TREATMENT" ? doctors[4].user.id : null, status, arrivedAt: new Date(Date.now() - int(10, 180) * 60000) } });
-    if (mode === "AMBULANCE") await prisma.ambulanceDispatch.create({ data: { ambulanceId: amb1.id, emergencyVisitId: v.id, pickupAddress: "Model Town, Lahore (demo)", destination: "Demo General Hospital — ER", dispatchedAt: new Date(Date.now() - 120 * 60000), arrivedAt: new Date(Date.now() - 95 * 60000), completedAt: new Date(Date.now() - 80 * 60000), status: "COMPLETED" } });
+    if (mode === "AMBULANCE") await prisma.ambulanceDispatch.create({ data: { ambulanceId: amb1.id, emergencyVisitId: v.id, pickupAddress: "Model Town, Lahore (demo)", destination: `${def.name} — ER`, dispatchedAt: new Date(Date.now() - 120 * 60000), arrivedAt: new Date(Date.now() - 95 * 60000), completedAt: new Date(Date.now() - 80 * 60000), status: "COMPLETED" } });
   }
 
   // ── Radiology ────────────────────────────────────────────
@@ -412,14 +453,9 @@ async function main() {
   ] });
 
   await prisma.auditLog.create({ data: { userId: admin.user.id, action: "system.seed", entityType: "System", metadata: { note: "Demonstration data seeded" } } });
-
-  console.log("\n✔ Demo data ready (DEMONSTRATION DATA — synthetic, not real patients).");
-  console.log("  Accounts: admin@demo.hms, hadmin@demo.hms, reception@demo.hms, dr.khan@demo.hms, dr.fatima@demo.hms,");
-  console.log("            nurse@demo.hms, lab@demo.hms, radiology@demo.hms, pharmacy@demo.hms, billing@demo.hms, hr@demo.hms, patient@demo.hms");
-  if (process.env.SEED_DEMO_PASSWORD) console.log("  Password: value of SEED_DEMO_PASSWORD");
-  else console.log(`  Generated password for all demo accounts (shown once): ${demoPassword}`);
+  return admin.user.id;
 }
 
 main()
   .catch((e) => { console.error(e); process.exitCode = 1; })
-  .finally(() => prisma.$disconnect());
+  .finally(() => base.$disconnect());

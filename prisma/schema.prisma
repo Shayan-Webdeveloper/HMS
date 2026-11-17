@@ -1,10 +1,19 @@
 // Hospital Management System — Prisma schema (PostgreSQL)
 // Conventions:
-//  * String cuid primary keys; human-facing identifiers (MRN, invoice no.) are separate unique columns.
+//  * String cuid primary keys; human-facing identifiers (MRN, invoice no.) are separate columns,
+//    unique PER HOSPITAL.
 //  * Money uses Decimal(12,2). Never Float.
 //  * Clinical and financial rows are never hard-deleted: archive flags, status transitions, amendments, reversals.
 //  * All timestamps are stored in UTC (timestamptz); display conversion uses the hospital time zone setting.
-//  * hospitalId / facilityId columns exist so multiple branches can be added later.
+//
+// Multi-hospital tenancy (see docs/MULTI_TENANCY.md):
+//  * Every hospital-owned table has a NOT NULL "hospitalId". Its default is the transaction-local
+//    database setting `app.hospital_id`, which the server sets from the authenticated session — never
+//    from client input. Without that setting, inserts fail (NULL violates NOT NULL).
+//  * Row-level security policies (role `hms_app`) restrict every hospital-owned table to that hospital,
+//    and triggers reject cross-hospital references and hospital reassignment. Those live in SQL migrations
+//    because Prisma's schema language cannot express them.
+//  * Global tables (no hospitalId): User, Session, PasswordResetToken, Role, Permission, RateLimitBucket, Hospital.
 
 generator client {
   provider = "prisma-client-js"
@@ -17,100 +26,215 @@ datasource db {
 // ───────────────────────────── Organisation ─────────────────────────────
 
 model Hospital {
-  id          String       @id @default(cuid())
-  name        String
-  code        String       @unique
-  address     String?
-  phone       String?
-  email       String?
-  timezone    String       @default("Asia/Karachi")
-  currency    String       @default("PKR")
-  locale      String       @default("en-PK")
-  createdAt   DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt   DateTime     @updatedAt @db.Timestamptz(3)
-  facilities  Facility[]
-  departments Department[]
-  settings    SystemSetting[]
+  id            String    @id @default(cuid())
+  name          String
+  code          String    @unique
+  address       String?
+  phone         String?
+  email         String?
+  timezone      String    @default("Asia/Karachi")
+  currency      String    @default("PKR")
+  locale        String    @default("en-PK")
+  isActive      Boolean   @default(true)
+  deactivatedAt DateTime? @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @db.Timestamptz(3)
+
+  facilities          Facility[]
+  departments         Department[]
+  settings            SystemSetting[]
+  memberships         HospitalMembership[]
+  userRoles           UserRole[]
+  rolePermissions     RolePermission[]
+  activeSessions      Session[]
+  staff               Staff[]
+  doctorProfiles      DoctorProfile[]
+  doctorAvailability  DoctorAvailability[]
+  scheduleExceptions  ScheduleException[]
+  attendance          EmployeeAttendance[]
+  leaveRequests       LeaveRequest[]
+  patients            Patient[]
+  patientUserLinks    PatientUserLink[]
+  emergencyContacts   EmergencyContact[]
+  allergies           Allergy[]
+  medicalHistory      MedicalHistory[]
+  appointments        Appointment[]
+  queueEntries        QueueEntry[]
+  encounters          Encounter[]
+  clinicalNotes       ClinicalNote[]
+  diagnoses           Diagnosis[]
+  vitalSigns          VitalSign[]
+  wards               Ward[]
+  beds                Bed[]
+  admissions          Admission[]
+  bedAssignments      BedAssignment[]
+  nursingNotes        NursingNote[]
+  emergencyVisits     EmergencyVisit[]
+  medications         Medication[]
+  medicationBatches   MedicationBatch[]
+  prescriptions       Prescription[]
+  prescriptionItems   PrescriptionItem[]
+  medAdministrations  MedicationAdministration[]
+  laboratoryTests     LaboratoryTest[]
+  labOrders           LabOrder[]
+  labOrderItems       LabOrderItem[]
+  specimens           Specimen[]
+  labResults          LabResult[]
+  imagingStudies      ImagingStudy[]
+  imagingReports      ImagingReport[]
+  operatingTheatres   OperatingTheatre[]
+  procedures          Procedure[]
+  invoices            Invoice[]
+  invoiceItems        InvoiceItem[]
+  payments            Payment[]
+  refunds             Refund[]
+  insuranceProviders  InsuranceProvider[]
+  insurancePolicies   InsurancePolicy[]
+  insuranceClaims     InsuranceClaim[]
+  suppliers           Supplier[]
+  inventoryItems      InventoryItem[]
+  purchaseOrders      PurchaseOrder[]
+  purchaseOrderItems  PurchaseOrderItem[]
+  stockMovements      StockMovement[]
+  ambulances          Ambulance[]
+  ambulanceDispatches AmbulanceDispatch[]
+  notifications       Notification[]
+  documents           UploadedDocument[]
+  auditLogs           AuditLog[]
+  sequences           Sequence[]
+
+  @@index([isActive, name])
 }
 
 model Facility {
-  id         String       @id @default(cuid())
-  hospitalId String
-  hospital   Hospital     @relation(fields: [hospitalId], references: [id])
+  id         String   @id @default(cuid())
+  hospitalId String   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
   name       String
-  code       String       @unique
+  code       String
   address    String?
-  isActive   Boolean      @default(true)
-  createdAt  DateTime     @default(now()) @db.Timestamptz(3)
-  updatedAt  DateTime     @updatedAt @db.Timestamptz(3)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
   wards      Ward[]
+
+  @@unique([hospitalId, code])
 }
 
 model Department {
-  id          String          @id @default(cuid())
-  hospitalId  String
-  hospital    Hospital        @relation(fields: [hospitalId], references: [id])
-  name        String
-  code        String          @unique
-  description String?
-  isClinical  Boolean         @default(true)
-  isActive    Boolean         @default(true)
-  createdAt   DateTime        @default(now()) @db.Timestamptz(3)
-  updatedAt   DateTime        @updatedAt @db.Timestamptz(3)
-  staff       Staff[]
-  doctors     DoctorProfile[]
+  id           String          @id @default(cuid())
+  hospitalId   String          @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital        @relation(fields: [hospitalId], references: [id])
+  name         String
+  code         String
+  description  String?
+  isClinical   Boolean         @default(true)
+  isActive     Boolean         @default(true)
+  createdAt    DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime        @updatedAt @db.Timestamptz(3)
+  staff        Staff[]
+  doctors      DoctorProfile[]
   appointments Appointment[]
-  wards       Ward[]
-  encounters  Encounter[]
+  wards        Ward[]
+  encounters   Encounter[]
+
+  @@unique([hospitalId, code])
 }
 
 model SystemSetting {
-  id         String   @id @default(cuid())
-  hospitalId String
-  hospital   Hospital @relation(fields: [hospitalId], references: [id])
-  key        String
-  value      Json
-  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+  id          String   @id @default(cuid())
+  hospitalId  String   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital    Hospital @relation(fields: [hospitalId], references: [id])
+  key         String
+  value       Json
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
   updatedById String?
+  updatedBy   User?    @relation("SettingUpdatedBy", fields: [updatedById], references: [id], onDelete: Restrict)
 
   @@unique([hospitalId, key])
+  @@index([updatedById])
 }
 
 // ───────────────────────────── Identity & access ─────────────────────────────
 
+// Platform-level roles sit ABOVE hospitals. They are separate from hospital roles (UserRole):
+// a Platform Administrator manages hospital tenants and their administrator accounts but has
+// no access to any hospital's clinical, financial or operational records.
+enum PlatformRole {
+  PLATFORM_ADMIN
+}
+
 model User {
-  id                 String          @id @default(cuid())
-  email              String          @unique
+  id                 String        @id @default(cuid())
+  email              String        @unique
   name               String
   passwordHash       String
-  isActive           Boolean         @default(true)
-  mustChangePassword Boolean         @default(false)
-  failedLoginCount   Int             @default(0)
-  lockedUntil        DateTime?       @db.Timestamptz(3)
-  lastLoginAt        DateTime?       @db.Timestamptz(3)
-  createdAt          DateTime        @default(now()) @db.Timestamptz(3)
-  updatedAt          DateTime        @updatedAt @db.Timestamptz(3)
-  roles              UserRole[]
-  sessions           Session[]
-  resetTokens        PasswordResetToken[]
-  staff              Staff?
-  patientLink        PatientUserLink?
-  notifications      Notification[]
-  auditLogs          AuditLog[]
+  isActive           Boolean       @default(true)
+  platformRole       PlatformRole?
+  mustChangePassword Boolean       @default(false)
+  failedLoginCount   Int           @default(0)
+  lockedUntil        DateTime?     @db.Timestamptz(3)
+  lastLoginAt        DateTime?     @db.Timestamptz(3)
+  createdAt          DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt          DateTime      @updatedAt @db.Timestamptz(3)
+
+  memberships   HospitalMembership[]
+  roles         UserRole[]
+  sessions      Session[]
+  resetTokens   PasswordResetToken[]
+  staff         Staff[]
+  patientLinks  PatientUserLink[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+
+  // Actor back-relations (who created / recorded / approved a row). Users are never hard-deleted.
+  settingsUpdated         SystemSetting[]            @relation("SettingUpdatedBy")
+  leaveDecided            LeaveRequest[]             @relation("LeaveDecidedBy")
+  patientsCreated         Patient[]                  @relation("PatientCreatedBy")
+  allergiesRecorded       Allergy[]                  @relation("AllergyRecordedBy")
+  historyRecorded         MedicalHistory[]           @relation("HistoryRecordedBy")
+  appointmentsCreated     Appointment[]              @relation("AppointmentCreatedBy")
+  encountersFinalized     Encounter[]                @relation("EncounterFinalizedBy")
+  clinicalNotesAuthored   ClinicalNote[]             @relation("ClinicalNoteAuthor")
+  vitalsRecorded          VitalSign[]                @relation("VitalRecordedBy")
+  admissionsCreated       Admission[]                @relation("AdmissionCreatedBy")
+  bedAssignmentsMade      BedAssignment[]            @relation("BedAssignedBy")
+  nursingNotesAuthored    NursingNote[]              @relation("NursingNoteAuthor")
+  erVisitsTriaged         EmergencyVisit[]           @relation("ErTriagedBy")
+  erVisitsAssigned        EmergencyVisit[]           @relation("ErAssignedClinician")
+  medicationsAdministered MedicationAdministration[] @relation("MedAdministeredBy")
+  specimensCollected      Specimen[]                 @relation("SpecimenCollectedBy")
+  labResultsEntered       LabResult[]                @relation("LabResultEnteredBy")
+  labResultsValidated     LabResult[]                @relation("LabResultValidatedBy")
+  labOrdersReleased       LabOrder[]                 @relation("LabOrderReleasedBy")
+  imagingRequested        ImagingStudy[]             @relation("ImagingRequestedBy")
+  imagingReported         ImagingReport[]            @relation("ImagingReportedBy")
+  imagingVerified         ImagingReport[]            @relation("ImagingVerifiedBy")
+  invoicesCreated         Invoice[]                  @relation("InvoiceCreatedBy")
+  paymentsReceived        Payment[]                  @relation("PaymentReceivedBy")
+  refundsApproved         Refund[]                   @relation("RefundApprovedBy")
+  purchaseOrdersCreated   PurchaseOrder[]            @relation("PurchaseOrderCreatedBy")
+  stockMovementsPerformed StockMovement[]            @relation("StockMovementPerformedBy")
+  dispatchesCreated       AmbulanceDispatch[]        @relation("DispatchCreatedBy")
+  documentsUploaded       UploadedDocument[]         @relation("DocumentUploadedBy")
 }
 
 model Session {
-  id          String   @id @default(cuid())
-  tokenHash   String   @unique
-  userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt   DateTime @db.Timestamptz(3)
-  lastSeenAt  DateTime @default(now()) @db.Timestamptz(3)
-  ipAddress   String?
-  userAgent   String?
-  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  id               String    @id @default(cuid())
+  tokenHash        String    @unique
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Hospital the session is currently working in. Chosen only from the user's verified memberships.
+  activeHospitalId String?
+  activeHospital   Hospital? @relation(fields: [activeHospitalId], references: [id], onDelete: SetNull)
+  expiresAt        DateTime  @db.Timestamptz(3)
+  lastSeenAt       DateTime  @default(now()) @db.Timestamptz(3)
+  ipAddress        String?
+  userAgent        String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([userId])
+  @@index([activeHospitalId])
 }
 
 model PasswordResetToken {
@@ -121,8 +245,12 @@ model PasswordResetToken {
   expiresAt DateTime  @db.Timestamptz(3)
   usedAt    DateTime? @db.Timestamptz(3)
   createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([userId])
 }
 
+// Role definitions and the permission catalogue are global; WHICH permissions a role grants is
+// configured per hospital (RolePermission.hospitalId), so one hospital's edits never affect another.
 model Role {
   id          String           @id @default(cuid())
   key         String           @unique // SUPER_ADMIN, HOSPITAL_ADMIN, ...
@@ -143,27 +271,50 @@ model Permission {
 }
 
 model RolePermission {
+  hospitalId   String     @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital   @relation(fields: [hospitalId], references: [id])
   roleId       String
   permissionId String
   role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
-  @@id([roleId, permissionId])
+  @@id([hospitalId, roleId, permissionId])
+  @@index([roleId])
+  @@index([permissionId])
+}
+
+// A user's access to one hospital. Deactivating a membership revokes access to that hospital only.
+model HospitalMembership {
+  id         String   @id @default(cuid())
+  hospitalId String   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([hospitalId, userId])
+  @@index([userId])
 }
 
 model UserRole {
-  userId String
-  roleId String
-  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  hospitalId String   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+  userId     String
+  roleId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
-  @@id([userId, roleId])
+  @@id([hospitalId, userId, roleId])
+  @@index([userId])
+  @@index([roleId])
 }
 
 model RateLimitBucket {
-  key       String   @id
-  count     Int
-  resetAt   DateTime @db.Timestamptz(3)
+  key     String   @id
+  count   Int
+  resetAt DateTime @db.Timestamptz(3)
 }
 
 // ───────────────────────────── Staff & doctors ─────────────────────────────
@@ -176,46 +327,53 @@ enum EmploymentStatus {
 }
 
 model Staff {
-  id               String            @id @default(cuid())
-  employeeNo       String            @unique
-  userId           String?           @unique
-  user             User?             @relation(fields: [userId], references: [id])
-  firstName        String
-  lastName         String
-  email            String?
-  phone            String?
-  departmentId     String?
-  department       Department?       @relation(fields: [departmentId], references: [id])
-  position         String
-  joiningDate      DateTime          @db.Date
-  employmentStatus EmploymentStatus  @default(ACTIVE)
-  shift            String?           // e.g. MORNING / EVENING / NIGHT
+  id                    String               @id @default(cuid())
+  hospitalId            String               @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital              Hospital             @relation(fields: [hospitalId], references: [id])
+  employeeNo            String
+  userId                String?
+  user                  User?                @relation(fields: [userId], references: [id])
+  firstName             String
+  lastName              String
+  email                 String?
+  phone                 String?
+  departmentId          String?
+  department            Department?          @relation(fields: [departmentId], references: [id])
+  position              String
+  joiningDate           DateTime             @db.Date
+  employmentStatus      EmploymentStatus     @default(ACTIVE)
+  shift                 String? // e.g. MORNING / EVENING / NIGHT
   emergencyContactName  String?
   emergencyContactPhone String?
-  createdAt        DateTime          @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime          @updatedAt @db.Timestamptz(3)
-  doctorProfile    DoctorProfile?
-  attendance       EmployeeAttendance[]
-  leaveRequests    LeaveRequest[]
+  createdAt             DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt             DateTime             @updatedAt @db.Timestamptz(3)
+  doctorProfile         DoctorProfile?
+  attendance            EmployeeAttendance[]
+  leaveRequests         LeaveRequest[]
 
+  @@unique([hospitalId, employeeNo])
+  @@unique([hospitalId, userId])
+  @@index([userId])
   @@index([departmentId])
-  @@index([lastName, firstName])
+  @@index([hospitalId, lastName, firstName])
 }
 
 model DoctorProfile {
-  id                  String        @id @default(cuid())
-  staffId             String        @unique
-  staff               Staff         @relation(fields: [staffId], references: [id])
+  id                  String               @id @default(cuid())
+  hospitalId          String               @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital            Hospital             @relation(fields: [hospitalId], references: [id])
+  staffId             String               @unique
+  staff               Staff                @relation(fields: [staffId], references: [id])
   departmentId        String
-  department          Department    @relation(fields: [departmentId], references: [id])
+  department          Department           @relation(fields: [departmentId], references: [id])
   specialty           String
   qualifications      String?
-  licenseNumber       String        @unique
-  consultationFee     Decimal       @db.Decimal(12, 2)
-  slotMinutes         Int           @default(15)
-  acceptsAppointments Boolean       @default(true)
-  createdAt           DateTime      @default(now()) @db.Timestamptz(3)
-  updatedAt           DateTime      @updatedAt @db.Timestamptz(3)
+  licenseNumber       String
+  consultationFee     Decimal              @db.Decimal(12, 2)
+  slotMinutes         Int                  @default(15)
+  acceptsAppointments Boolean              @default(true)
+  createdAt           DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime             @updatedAt @db.Timestamptz(3)
   availability        DoctorAvailability[]
   exceptions          ScheduleException[]
   appointments        Appointment[]
@@ -223,30 +381,38 @@ model DoctorProfile {
   prescriptions       Prescription[]
   labOrders           LabOrder[]
   admissions          Admission[]
+  procedures          Procedure[]
 
+  @@unique([hospitalId, licenseNumber])
   @@index([departmentId])
 }
 
 model DoctorAvailability {
-  id        String        @id @default(cuid())
-  doctorId  String
-  doctor    DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Cascade)
-  weekday   Int           // 0=Sunday … 6=Saturday
-  startTime String        // "09:00" hospital local time
-  endTime   String        // "13:00"
+  id         String        @id @default(cuid())
+  hospitalId String        @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital      @relation(fields: [hospitalId], references: [id])
+  doctorId   String
+  doctor     DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  weekday    Int // 0=Sunday … 6=Saturday
+  startTime  String // "09:00" hospital local time
+  endTime    String // "13:00"
 
   @@index([doctorId, weekday])
+  @@index([hospitalId])
 }
 
 model ScheduleException {
-  id        String        @id @default(cuid())
-  doctorId  String
-  doctor    DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Cascade)
-  startsAt  DateTime      @db.Timestamptz(3)
-  endsAt    DateTime      @db.Timestamptz(3)
-  reason    String
+  id         String        @id @default(cuid())
+  hospitalId String        @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital      @relation(fields: [hospitalId], references: [id])
+  doctorId   String
+  doctor     DoctorProfile @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+  startsAt   DateTime      @db.Timestamptz(3)
+  endsAt     DateTime      @db.Timestamptz(3)
+  reason     String
 
   @@index([doctorId, startsAt])
+  @@index([hospitalId])
 }
 
 enum AttendanceStatus {
@@ -258,17 +424,20 @@ enum AttendanceStatus {
 }
 
 model EmployeeAttendance {
-  id        String           @id @default(cuid())
-  staffId   String
-  staff     Staff            @relation(fields: [staffId], references: [id])
-  date      DateTime         @db.Date
-  status    AttendanceStatus
-  checkIn   DateTime?        @db.Timestamptz(3)
-  checkOut  DateTime?        @db.Timestamptz(3)
-  note      String?
-  createdAt DateTime         @default(now()) @db.Timestamptz(3)
+  id         String           @id @default(cuid())
+  hospitalId String           @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital         @relation(fields: [hospitalId], references: [id])
+  staffId    String
+  staff      Staff            @relation(fields: [staffId], references: [id])
+  date       DateTime         @db.Date
+  status     AttendanceStatus
+  checkIn    DateTime?        @db.Timestamptz(3)
+  checkOut   DateTime?        @db.Timestamptz(3)
+  note       String?
+  createdAt  DateTime         @default(now()) @db.Timestamptz(3)
 
   @@unique([staffId, date])
+  @@index([hospitalId, date])
 }
 
 enum LeaveStatus {
@@ -279,19 +448,24 @@ enum LeaveStatus {
 }
 
 model LeaveRequest {
-  id           String      @id @default(cuid())
-  staffId      String
-  staff        Staff       @relation(fields: [staffId], references: [id])
-  type         String
-  startDate    DateTime    @db.Date
-  endDate      DateTime    @db.Date
-  reason       String?
-  status       LeaveStatus @default(PENDING)
-  decidedById  String?
-  decidedAt    DateTime?   @db.Timestamptz(3)
-  createdAt    DateTime    @default(now()) @db.Timestamptz(3)
+  id          String      @id @default(cuid())
+  hospitalId  String      @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital    Hospital    @relation(fields: [hospitalId], references: [id])
+  staffId     String
+  staff       Staff       @relation(fields: [staffId], references: [id])
+  type        String
+  startDate   DateTime    @db.Date
+  endDate     DateTime    @db.Date
+  reason      String?
+  status      LeaveStatus @default(PENDING)
+  decidedById String?
+  decidedBy   User?       @relation("LeaveDecidedBy", fields: [decidedById], references: [id], onDelete: Restrict)
+  decidedAt   DateTime?   @db.Timestamptz(3)
+  createdAt   DateTime    @default(now()) @db.Timestamptz(3)
 
   @@index([staffId, status])
+  @@index([hospitalId, status])
+  @@index([decidedById])
 }
 
 // ───────────────────────────── Patients ─────────────────────────────
@@ -311,65 +485,83 @@ enum PatientStatus {
 }
 
 model Patient {
-  id               String            @id @default(cuid())
-  mrn              String            @unique
-  firstName        String
-  lastName         String
-  dateOfBirth      DateTime?         @db.Date
-  sex              Sex               @default(UNKNOWN)
-  phone            String?
-  email            String?
-  address          String?
-  city             String?
-  bloodGroup       String?
-  medicalAlerts    String?
-  status           PatientStatus     @default(ACTIVE)
-  consentToSms     Boolean           @default(false)
-  consentToEmail   Boolean           @default(false)
-  mergedIntoId     String?
-  registeredAt     DateTime          @default(now()) @db.Timestamptz(3)
-  createdById      String?
-  createdAt        DateTime          @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime          @updatedAt @db.Timestamptz(3)
+  id                String             @id @default(cuid())
+  hospitalId        String             @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital          Hospital           @relation(fields: [hospitalId], references: [id])
+  mrn               String
+  firstName         String
+  lastName          String
+  dateOfBirth       DateTime?          @db.Date
+  sex               Sex                @default(UNKNOWN)
+  phone             String?
+  email             String?
+  address           String?
+  city              String?
+  bloodGroup        String?
+  medicalAlerts     String?
+  status            PatientStatus      @default(ACTIVE)
+  consentToSms      Boolean            @default(false)
+  consentToEmail    Boolean            @default(false)
+  mergedIntoId      String?
+  mergedInto        Patient?           @relation("PatientMerge", fields: [mergedIntoId], references: [id], onDelete: Restrict)
+  mergedFrom        Patient[]          @relation("PatientMerge")
+  registeredAt      DateTime           @default(now()) @db.Timestamptz(3)
+  createdById       String?
+  createdBy         User?              @relation("PatientCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt         DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime           @updatedAt @db.Timestamptz(3)
   emergencyContacts EmergencyContact[]
-  allergies        Allergy[]
-  medicalHistory   MedicalHistory[]
-  appointments     Appointment[]
-  encounters       Encounter[]
-  vitals           VitalSign[]
-  prescriptions    Prescription[]
-  labOrders        LabOrder[]
-  imagingStudies   ImagingStudy[]
-  admissions       Admission[]
-  invoices         Invoice[]
-  policies         InsurancePolicy[]
-  documents        UploadedDocument[]
-  procedures       Procedure[]
-  userLink         PatientUserLink?
-  emergencyVisits  EmergencyVisit[]
+  allergies         Allergy[]
+  medicalHistory    MedicalHistory[]
+  appointments      Appointment[]
+  encounters        Encounter[]
+  vitals            VitalSign[]
+  prescriptions     Prescription[]
+  labOrders         LabOrder[]
+  imagingStudies    ImagingStudy[]
+  admissions        Admission[]
+  invoices          Invoice[]
+  policies          InsurancePolicy[]
+  documents         UploadedDocument[]
+  procedures        Procedure[]
+  userLink          PatientUserLink?
+  emergencyVisits   EmergencyVisit[]
 
-  @@index([lastName, firstName])
-  @@index([phone])
-  @@index([status, registeredAt])
+  @@unique([hospitalId, mrn])
+  @@index([hospitalId, lastName, firstName])
+  @@index([hospitalId, phone])
+  @@index([hospitalId, status, registeredAt])
+  @@index([mergedIntoId])
+  @@index([createdById])
 }
 
 model PatientUserLink {
-  id         String   @id @default(cuid())
-  patientId  String   @unique
-  patient    Patient  @relation(fields: [patientId], references: [id])
-  userId     String   @unique
-  user       User     @relation(fields: [userId], references: [id])
+  id         String    @id @default(cuid())
+  hospitalId String    @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital  @relation(fields: [hospitalId], references: [id])
+  patientId  String    @unique
+  patient    Patient   @relation(fields: [patientId], references: [id])
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
   verifiedAt DateTime? @db.Timestamptz(3)
-  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@unique([hospitalId, userId])
+  @@index([userId])
 }
 
 model EmergencyContact {
-  id           String  @id @default(cuid())
+  id           String   @id @default(cuid())
+  hospitalId   String   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital @relation(fields: [hospitalId], references: [id])
   patientId    String
-  patient      Patient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  patient      Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
   name         String
   relationship String?
   phone        String
+
+  @@index([patientId])
+  @@index([hospitalId])
 }
 
 enum AllergySeverity {
@@ -380,30 +572,40 @@ enum AllergySeverity {
 }
 
 model Allergy {
-  id         String          @id @default(cuid())
-  patientId  String
-  patient    Patient         @relation(fields: [patientId], references: [id])
-  substance  String
-  reaction   String?
-  severity   AllergySeverity @default(UNKNOWN)
-  isActive   Boolean         @default(true)
+  id           String          @id @default(cuid())
+  hospitalId   String          @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital        @relation(fields: [hospitalId], references: [id])
+  patientId    String
+  patient      Patient         @relation(fields: [patientId], references: [id])
+  substance    String
+  reaction     String?
+  severity     AllergySeverity @default(UNKNOWN)
+  isActive     Boolean         @default(true)
   recordedById String?
-  createdAt  DateTime        @default(now()) @db.Timestamptz(3)
+  recordedBy   User?           @relation("AllergyRecordedBy", fields: [recordedById], references: [id], onDelete: Restrict)
+  createdAt    DateTime        @default(now()) @db.Timestamptz(3)
 
   @@index([patientId])
+  @@index([hospitalId])
+  @@index([recordedById])
 }
 
 model MedicalHistory {
-  id          String   @id @default(cuid())
-  patientId   String
-  patient     Patient  @relation(fields: [patientId], references: [id])
-  category    String   // PAST_ILLNESS, SURGICAL, FAMILY, SOCIAL, IMMUNIZATION
-  description String
-  onsetDate   DateTime? @db.Date
+  id           String    @id @default(cuid())
+  hospitalId   String    @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital  @relation(fields: [hospitalId], references: [id])
+  patientId    String
+  patient      Patient   @relation(fields: [patientId], references: [id])
+  category     String // PAST_ILLNESS, SURGICAL, FAMILY, SOCIAL, IMMUNIZATION
+  description  String
+  onsetDate    DateTime? @db.Date
   recordedById String?
-  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  recordedBy   User?     @relation("HistoryRecordedBy", fields: [recordedById], references: [id], onDelete: Restrict)
+  createdAt    DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([patientId])
+  @@index([hospitalId])
+  @@index([recordedById])
 }
 
 // ───────────────────────────── Appointments & queue ─────────────────────────────
@@ -428,7 +630,9 @@ enum AppointmentType {
 
 model Appointment {
   id            String            @id @default(cuid())
-  appointmentNo String            @unique
+  hospitalId    String            @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital      Hospital          @relation(fields: [hospitalId], references: [id])
+  appointmentNo String
   patientId     String
   patient       Patient           @relation(fields: [patientId], references: [id])
   doctorId      String
@@ -446,14 +650,19 @@ model Appointment {
   checkedInAt   DateTime?         @db.Timestamptz(3)
   completedAt   DateTime?         @db.Timestamptz(3)
   createdById   String?
+  createdBy     User?             @relation("AppointmentCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
   createdAt     DateTime          @default(now()) @db.Timestamptz(3)
   updatedAt     DateTime          @updatedAt @db.Timestamptz(3)
   queueEntry    QueueEntry?
   encounter     Encounter?
 
+  @@unique([hospitalId, appointmentNo])
   @@index([doctorId, startsAt])
   @@index([patientId, startsAt])
-  @@index([status, startsAt])
+  @@index([hospitalId, status, startsAt])
+  @@index([hospitalId, startsAt])
+  @@index([departmentId])
+  @@index([createdById])
 }
 
 enum QueueStatus {
@@ -466,6 +675,8 @@ enum QueueStatus {
 
 model QueueEntry {
   id            String      @id @default(cuid())
+  hospitalId    String      @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital      Hospital    @relation(fields: [hospitalId], references: [id])
   appointmentId String      @unique
   appointment   Appointment @relation(fields: [appointmentId], references: [id])
   tokenNumber   Int
@@ -474,7 +685,7 @@ model QueueEntry {
   createdAt     DateTime    @default(now()) @db.Timestamptz(3)
   updatedAt     DateTime    @updatedAt @db.Timestamptz(3)
 
-  @@index([queueDate, status])
+  @@index([hospitalId, queueDate, status])
 }
 
 // ───────────────────────────── Clinical / EMR ─────────────────────────────
@@ -492,41 +703,49 @@ enum EncounterStatus {
 }
 
 model Encounter {
-  id              String          @id @default(cuid())
-  encounterNo     String          @unique
-  patientId       String
-  patient         Patient         @relation(fields: [patientId], references: [id])
-  doctorId        String
-  doctor          DoctorProfile   @relation(fields: [doctorId], references: [id])
-  departmentId    String
-  department      Department      @relation(fields: [departmentId], references: [id])
-  appointmentId   String?         @unique
-  appointment     Appointment?    @relation(fields: [appointmentId], references: [id])
-  admissionId     String?
-  admission       Admission?      @relation(fields: [admissionId], references: [id])
-  type            EncounterType   @default(OPD)
-  status          EncounterStatus @default(DRAFT)
-  chiefComplaint  String?
+  id                      String          @id @default(cuid())
+  hospitalId              String          @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital                Hospital        @relation(fields: [hospitalId], references: [id])
+  encounterNo             String
+  patientId               String
+  patient                 Patient         @relation(fields: [patientId], references: [id])
+  doctorId                String
+  doctor                  DoctorProfile   @relation(fields: [doctorId], references: [id])
+  departmentId            String
+  department              Department      @relation(fields: [departmentId], references: [id])
+  appointmentId           String?         @unique
+  appointment             Appointment?    @relation(fields: [appointmentId], references: [id])
+  admissionId             String?
+  admission               Admission?      @relation(fields: [admissionId], references: [id])
+  type                    EncounterType   @default(OPD)
+  status                  EncounterStatus @default(DRAFT)
+  chiefComplaint          String?
   historyOfPresentIllness String?
-  examination     String?
-  assessment      String?
-  plan            String?
-  followUpDate    DateTime?       @db.Date
-  startedAt       DateTime        @default(now()) @db.Timestamptz(3)
-  finalizedAt     DateTime?       @db.Timestamptz(3)
-  finalizedById   String?
-  createdAt       DateTime        @default(now()) @db.Timestamptz(3)
-  updatedAt       DateTime        @updatedAt @db.Timestamptz(3)
-  diagnoses       Diagnosis[]
-  notes           ClinicalNote[]
-  vitals          VitalSign[]
-  prescriptions   Prescription[]
-  labOrders       LabOrder[]
-  imagingStudies  ImagingStudy[]
-  invoiceItems    InvoiceItem[]
+  examination             String?
+  assessment              String?
+  plan                    String?
+  followUpDate            DateTime?       @db.Date
+  startedAt               DateTime        @default(now()) @db.Timestamptz(3)
+  finalizedAt             DateTime?       @db.Timestamptz(3)
+  finalizedById           String?
+  finalizedBy             User?           @relation("EncounterFinalizedBy", fields: [finalizedById], references: [id], onDelete: Restrict)
+  createdAt               DateTime        @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime        @updatedAt @db.Timestamptz(3)
+  diagnoses               Diagnosis[]
+  notes                   ClinicalNote[]
+  vitals                  VitalSign[]
+  prescriptions           Prescription[]
+  labOrders               LabOrder[]
+  imagingStudies          ImagingStudy[]
+  invoiceItems            InvoiceItem[]
 
+  @@unique([hospitalId, encounterNo])
   @@index([patientId, startedAt])
   @@index([doctorId, status])
+  @@index([hospitalId, startedAt])
+  @@index([departmentId])
+  @@index([admissionId])
+  @@index([finalizedById])
 }
 
 enum NoteKind {
@@ -539,70 +758,91 @@ enum NoteKind {
 }
 
 model ClinicalNote {
-  id          String    @id @default(cuid())
+  id          String     @id @default(cuid())
+  hospitalId  String     @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital    Hospital   @relation(fields: [hospitalId], references: [id])
   encounterId String?
   encounter   Encounter? @relation(fields: [encounterId], references: [id])
   admissionId String?
   admission   Admission? @relation(fields: [admissionId], references: [id])
-  kind        NoteKind  @default(GENERAL)
+  kind        NoteKind   @default(GENERAL)
   content     String
-  reason      String?   // required for AMENDMENT
+  reason      String? // required for AMENDMENT
   authorId    String
-  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  author      User       @relation("ClinicalNoteAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+  createdAt   DateTime   @default(now()) @db.Timestamptz(3)
 
   @@index([encounterId])
   @@index([admissionId])
+  @@index([hospitalId])
+  @@index([authorId])
 }
 
 model Diagnosis {
   id          String    @id @default(cuid())
+  hospitalId  String    @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital    Hospital  @relation(fields: [hospitalId], references: [id])
   encounterId String
   encounter   Encounter @relation(fields: [encounterId], references: [id])
-  code        String?   // e.g. ICD-10 code entered by clinician
+  code        String? // e.g. ICD-10 code entered by clinician
   description String
   isPrimary   Boolean   @default(false)
   createdAt   DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([encounterId])
+  @@index([hospitalId])
 }
 
 model VitalSign {
-  id            String     @id @default(cuid())
-  patientId     String
-  patient       Patient    @relation(fields: [patientId], references: [id])
-  encounterId   String?
-  encounter     Encounter? @relation(fields: [encounterId], references: [id])
-  admissionId   String?
-  admission     Admission? @relation(fields: [admissionId], references: [id])
-  temperatureC  Decimal?   @db.Decimal(4, 1)
-  pulse         Int?
-  respRate      Int?
-  systolic      Int?
-  diastolic     Int?
-  spo2          Int?
-  weightKg      Decimal?   @db.Decimal(5, 1)
-  heightCm      Decimal?   @db.Decimal(5, 1)
-  recordedById  String
-  recordedAt    DateTime   @default(now()) @db.Timestamptz(3)
+  id           String     @id @default(cuid())
+  hospitalId   String     @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital   @relation(fields: [hospitalId], references: [id])
+  patientId    String
+  patient      Patient    @relation(fields: [patientId], references: [id])
+  encounterId  String?
+  encounter    Encounter? @relation(fields: [encounterId], references: [id])
+  admissionId  String?
+  admission    Admission? @relation(fields: [admissionId], references: [id])
+  temperatureC Decimal?   @db.Decimal(4, 1)
+  pulse        Int?
+  respRate     Int?
+  systolic     Int?
+  diastolic    Int?
+  spo2         Int?
+  weightKg     Decimal?   @db.Decimal(5, 1)
+  heightCm     Decimal?   @db.Decimal(5, 1)
+  recordedById String
+  recordedBy   User       @relation("VitalRecordedBy", fields: [recordedById], references: [id], onDelete: Restrict)
+  recordedAt   DateTime   @default(now()) @db.Timestamptz(3)
 
   @@index([patientId, recordedAt])
+  @@index([encounterId])
+  @@index([admissionId])
+  @@index([hospitalId])
+  @@index([recordedById])
 }
 
 // ───────────────────────────── Wards, beds, admissions ─────────────────────────────
 
 model Ward {
   id           String      @id @default(cuid())
+  hospitalId   String      @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital    @relation(fields: [hospitalId], references: [id])
   facilityId   String
   facility     Facility    @relation(fields: [facilityId], references: [id])
   departmentId String?
   department   Department? @relation(fields: [departmentId], references: [id])
   name         String
-  code         String      @unique
-  type         String      // GENERAL, ICU, PRIVATE, PEDIATRIC, MATERNITY
+  code         String
+  type         String // GENERAL, ICU, PRIVATE, PEDIATRIC, MATERNITY
   dailyRate    Decimal     @db.Decimal(12, 2)
   isActive     Boolean     @default(true)
   createdAt    DateTime    @default(now()) @db.Timestamptz(3)
   beds         Bed[]
+
+  @@unique([hospitalId, code])
+  @@index([facilityId])
+  @@index([departmentId])
 }
 
 enum BedStatus {
@@ -614,18 +854,20 @@ enum BedStatus {
 }
 
 model Bed {
-  id          String          @id @default(cuid())
-  wardId      String
-  ward        Ward            @relation(fields: [wardId], references: [id])
-  label       String
-  status      BedStatus       @default(AVAILABLE)
+  id                 String          @id @default(cuid())
+  hospitalId         String          @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital           Hospital        @relation(fields: [hospitalId], references: [id])
+  wardId             String
+  ward               Ward            @relation(fields: [wardId], references: [id])
+  label              String
+  status             BedStatus       @default(AVAILABLE)
   // Occupancy pointer. Unique ⇒ the DB itself forbids one admission sitting in two beds.
-  currentAdmissionId String?  @unique
-  version     Int             @default(0)
-  assignments BedAssignment[]
+  currentAdmissionId String?         @unique
+  version            Int             @default(0)
+  assignments        BedAssignment[]
 
   @@unique([wardId, label])
-  @@index([status])
+  @@index([hospitalId, status])
 }
 
 enum AdmissionStatus {
@@ -636,55 +878,73 @@ enum AdmissionStatus {
 }
 
 model Admission {
-  id               String          @id @default(cuid())
-  admissionNo      String          @unique
-  patientId        String
-  patient          Patient         @relation(fields: [patientId], references: [id])
-  doctorId         String
-  doctor           DoctorProfile   @relation(fields: [doctorId], references: [id])
-  reason           String
-  status           AdmissionStatus @default(ADMITTED)
-  admittedAt       DateTime        @default(now()) @db.Timestamptz(3)
-  expectedDischargeAt DateTime?    @db.Timestamptz(3)
-  dischargedAt     DateTime?       @db.Timestamptz(3)
-  dischargeSummary String?
-  dischargeCondition String?
-  createdById      String?
-  createdAt        DateTime        @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
-  bedAssignments   BedAssignment[]
-  encounters       Encounter[]
-  notes            ClinicalNote[]
-  vitals           VitalSign[]
-  medAdministrations MedicationAdministration[]
+  id                  String                     @id @default(cuid())
+  hospitalId          String                     @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital            Hospital                   @relation(fields: [hospitalId], references: [id])
+  admissionNo         String
+  patientId           String
+  patient             Patient                    @relation(fields: [patientId], references: [id])
+  doctorId            String
+  doctor              DoctorProfile              @relation(fields: [doctorId], references: [id])
+  reason              String
+  status              AdmissionStatus            @default(ADMITTED)
+  admittedAt          DateTime                   @default(now()) @db.Timestamptz(3)
+  expectedDischargeAt DateTime?                  @db.Timestamptz(3)
+  dischargedAt        DateTime?                  @db.Timestamptz(3)
+  dischargeSummary    String?
+  dischargeCondition  String?
+  createdById         String?
+  createdBy           User?                      @relation("AdmissionCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt           DateTime                   @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime                   @updatedAt @db.Timestamptz(3)
+  bedAssignments      BedAssignment[]
+  encounters          Encounter[]
+  notes               ClinicalNote[]
+  nursingNotes        NursingNote[]
+  vitals              VitalSign[]
+  medAdministrations  MedicationAdministration[]
 
-  @@index([status, admittedAt])
+  @@unique([hospitalId, admissionNo])
+  @@index([hospitalId, status, admittedAt])
   @@index([patientId])
+  @@index([doctorId])
+  @@index([createdById])
 }
 
 model BedAssignment {
-  id          String    @id @default(cuid())
-  admissionId String
-  admission   Admission @relation(fields: [admissionId], references: [id])
-  bedId       String
-  bed         Bed       @relation(fields: [bedId], references: [id])
-  startedAt   DateTime  @default(now()) @db.Timestamptz(3)
-  endedAt     DateTime? @db.Timestamptz(3)
-  reason      String?
+  id           String    @id @default(cuid())
+  hospitalId   String    @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital  @relation(fields: [hospitalId], references: [id])
+  admissionId  String
+  admission    Admission @relation(fields: [admissionId], references: [id])
+  bedId        String
+  bed          Bed       @relation(fields: [bedId], references: [id])
+  startedAt    DateTime  @default(now()) @db.Timestamptz(3)
+  endedAt      DateTime? @db.Timestamptz(3)
+  reason       String?
   assignedById String?
+  assignedBy   User?     @relation("BedAssignedBy", fields: [assignedById], references: [id], onDelete: Restrict)
 
   @@index([bedId, endedAt])
   @@index([admissionId])
+  @@index([hospitalId])
+  @@index([assignedById])
 }
 
 model NursingNote {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
+  hospitalId  String    @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital    Hospital  @relation(fields: [hospitalId], references: [id])
   admissionId String
+  admission   Admission @relation(fields: [admissionId], references: [id])
   content     String
   authorId    String
-  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  author      User      @relation("NursingNoteAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([admissionId])
+  @@index([hospitalId])
+  @@index([authorId])
 }
 
 // ───────────────────────────── Emergency ─────────────────────────────
@@ -700,65 +960,79 @@ enum EmergencyStatus {
 }
 
 model EmergencyVisit {
-  id               String          @id @default(cuid())
-  visitNo          String          @unique
-  patientId        String
-  patient          Patient         @relation(fields: [patientId], references: [id])
-  arrivalMode      String          // WALK_IN, AMBULANCE, REFERRED
-  arrivedAt        DateTime        @default(now()) @db.Timestamptz(3)
+  id                  String              @id @default(cuid())
+  hospitalId          String              @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital            Hospital            @relation(fields: [hospitalId], references: [id])
+  visitNo             String
+  patientId           String
+  patient             Patient             @relation(fields: [patientId], references: [id])
+  arrivalMode         String // WALK_IN, AMBULANCE, REFERRED
+  arrivedAt           DateTime            @default(now()) @db.Timestamptz(3)
   presentingComplaint String
-  triageCategory   String?         // configurable: RED/ORANGE/YELLOW/GREEN/BLUE — set by staff, never computed
-  triagedById      String?
+  triageCategory      String? // configurable: RED/ORANGE/YELLOW/GREEN/BLUE — set by staff, never computed
+  triagedById         String?
+  triagedBy           User?               @relation("ErTriagedBy", fields: [triagedById], references: [id], onDelete: Restrict)
   assignedClinicianId String?
-  status           EmergencyStatus @default(WAITING_TRIAGE)
-  disposition      String?
+  assignedClinician   User?               @relation("ErAssignedClinician", fields: [assignedClinicianId], references: [id], onDelete: Restrict)
+  status              EmergencyStatus     @default(WAITING_TRIAGE)
+  disposition         String?
   initialObservations String?
-  createdAt        DateTime        @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime        @updatedAt @db.Timestamptz(3)
-  dispatches       AmbulanceDispatch[]
+  createdAt           DateTime            @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime            @updatedAt @db.Timestamptz(3)
+  dispatches          AmbulanceDispatch[]
 
-  @@index([status, arrivedAt])
+  @@unique([hospitalId, visitNo])
+  @@index([hospitalId, status, arrivedAt])
+  @@index([patientId])
+  @@index([triagedById])
+  @@index([assignedClinicianId])
 }
 
 // ───────────────────────────── Pharmacy ─────────────────────────────
 
 model Medication {
-  id            String            @id @default(cuid())
-  code          String            @unique
-  genericName   String
-  brandName     String?
-  strength      String
-  dosageForm    String            // TABLET, CAPSULE, SYRUP, INJECTION, ...
-  category      String?
-  manufacturer  String?
-  unit          String            @default("unit")
-  sellingPrice  Decimal           @db.Decimal(12, 2)
-  reorderLevel  Int               @default(50)
-  isActive      Boolean           @default(true)
-  createdAt     DateTime          @default(now()) @db.Timestamptz(3)
-  updatedAt     DateTime          @updatedAt @db.Timestamptz(3)
-  batches       MedicationBatch[]
+  id                String             @id @default(cuid())
+  hospitalId        String             @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital          Hospital           @relation(fields: [hospitalId], references: [id])
+  code              String
+  genericName       String
+  brandName         String?
+  strength          String
+  dosageForm        String // TABLET, CAPSULE, SYRUP, INJECTION, ...
+  category          String?
+  manufacturer      String?
+  unit              String             @default("unit")
+  sellingPrice      Decimal            @db.Decimal(12, 2)
+  reorderLevel      Int                @default(50)
+  isActive          Boolean            @default(true)
+  createdAt         DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt         DateTime           @updatedAt @db.Timestamptz(3)
+  batches           MedicationBatch[]
   prescriptionItems PrescriptionItem[]
-  stockMovements StockMovement[]
+  stockMovements    StockMovement[]
 
-  @@index([genericName])
+  @@unique([hospitalId, code])
+  @@index([hospitalId, genericName])
 }
 
 model MedicationBatch {
-  id            String     @id @default(cuid())
-  medicationId  String
-  medication    Medication @relation(fields: [medicationId], references: [id])
-  batchNo       String
-  expiryDate    DateTime   @db.Date
-  quantity      Int        // current on-hand; ledger in StockMovement
-  purchaseCost  Decimal    @db.Decimal(12, 2)
-  supplierId    String?
-  supplier      Supplier?  @relation(fields: [supplierId], references: [id])
-  receivedAt    DateTime   @default(now()) @db.Timestamptz(3)
+  id             String          @id @default(cuid())
+  hospitalId     String          @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital       Hospital        @relation(fields: [hospitalId], references: [id])
+  medicationId   String
+  medication     Medication      @relation(fields: [medicationId], references: [id])
+  batchNo        String
+  expiryDate     DateTime        @db.Date
+  quantity       Int // current on-hand; ledger in StockMovement
+  purchaseCost   Decimal         @db.Decimal(12, 2)
+  supplierId     String?
+  supplier       Supplier?       @relation(fields: [supplierId], references: [id])
+  receivedAt     DateTime        @default(now()) @db.Timestamptz(3)
   stockMovements StockMovement[]
 
   @@unique([medicationId, batchNo])
-  @@index([expiryDate])
+  @@index([hospitalId, expiryDate])
+  @@index([supplierId])
 }
 
 enum PrescriptionStatus {
@@ -771,7 +1045,9 @@ enum PrescriptionStatus {
 
 model Prescription {
   id             String             @id @default(cuid())
-  prescriptionNo String             @unique
+  hospitalId     String             @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital       Hospital           @relation(fields: [hospitalId], references: [id])
+  prescriptionNo String
   patientId      String
   patient        Patient            @relation(fields: [patientId], references: [id])
   doctorId       String
@@ -786,56 +1062,77 @@ model Prescription {
   updatedAt      DateTime           @updatedAt @db.Timestamptz(3)
   items          PrescriptionItem[]
 
-  @@index([status, createdAt])
+  @@unique([hospitalId, prescriptionNo])
+  @@index([hospitalId, status, createdAt])
   @@index([patientId])
+  @@index([doctorId])
+  @@index([encounterId])
 }
 
 model PrescriptionItem {
-  id             String       @id @default(cuid())
-  prescriptionId String
-  prescription   Prescription @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
-  medicationId   String
-  medication     Medication   @relation(fields: [medicationId], references: [id])
-  dose           String
-  route          String
-  frequency      String
-  durationDays   Int
-  quantity       Int
-  dispensedQty   Int          @default(0)
-  instructions   String?
+  id              String                     @id @default(cuid())
+  hospitalId      String                     @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital        Hospital                   @relation(fields: [hospitalId], references: [id])
+  prescriptionId  String
+  prescription    Prescription               @relation(fields: [prescriptionId], references: [id], onDelete: Cascade)
+  medicationId    String
+  medication      Medication                 @relation(fields: [medicationId], references: [id])
+  dose            String
+  route           String
+  frequency       String
+  durationDays    Int
+  quantity        Int
+  dispensedQty    Int                        @default(0)
+  instructions    String?
   administrations MedicationAdministration[]
+
+  @@index([prescriptionId])
+  @@index([medicationId])
+  @@index([hospitalId])
 }
 
 model MedicationAdministration {
-  id                 String           @id @default(cuid())
+  id                 String            @id @default(cuid())
+  hospitalId         String            @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital           Hospital          @relation(fields: [hospitalId], references: [id])
   admissionId        String
-  admission          Admission        @relation(fields: [admissionId], references: [id])
+  admission          Admission         @relation(fields: [admissionId], references: [id])
   prescriptionItemId String?
   prescriptionItem   PrescriptionItem? @relation(fields: [prescriptionItemId], references: [id])
   medicationName     String
   dose               String
-  administeredAt     DateTime         @default(now()) @db.Timestamptz(3)
+  administeredAt     DateTime          @default(now()) @db.Timestamptz(3)
   administeredById   String
-  status             String           @default("GIVEN") // GIVEN, HELD, REFUSED
+  administeredBy     User              @relation("MedAdministeredBy", fields: [administeredById], references: [id], onDelete: Restrict)
+  status             String            @default("GIVEN") // GIVEN, HELD, REFUSED
   note               String?
+
+  @@index([admissionId])
+  @@index([prescriptionItemId])
+  @@index([hospitalId])
+  @@index([administeredById])
 }
 
 // ───────────────────────────── Laboratory ─────────────────────────────
 
 model LaboratoryTest {
-  id             String         @id @default(cuid())
-  code           String         @unique
-  name           String
-  category       String
-  specimenType   String
-  unit           String?
-  referenceLow   Decimal?       @db.Decimal(12, 3)
-  referenceHigh  Decimal?       @db.Decimal(12, 3)
-  referenceText  String?
-  price          Decimal        @db.Decimal(12, 2)
-  turnaroundHours Int           @default(24)
-  isActive       Boolean        @default(true)
-  orderItems     LabOrderItem[]
+  id              String         @id @default(cuid())
+  hospitalId      String         @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital        Hospital       @relation(fields: [hospitalId], references: [id])
+  code            String
+  name            String
+  category        String
+  specimenType    String
+  unit            String?
+  referenceLow    Decimal?       @db.Decimal(12, 3)
+  referenceHigh   Decimal?       @db.Decimal(12, 3)
+  referenceText   String?
+  price           Decimal        @db.Decimal(12, 2)
+  turnaroundHours Int            @default(24)
+  isActive        Boolean        @default(true)
+  orderItems      LabOrderItem[]
+
+  @@unique([hospitalId, code])
 }
 
 enum LabOrderStatus {
@@ -849,69 +1146,96 @@ enum LabOrderStatus {
 }
 
 model LabOrder {
-  id           String         @id @default(cuid())
-  orderNo      String         @unique
-  patientId    String
-  patient      Patient        @relation(fields: [patientId], references: [id])
-  doctorId     String
-  doctor       DoctorProfile  @relation(fields: [doctorId], references: [id])
-  encounterId  String?
-  encounter    Encounter?     @relation(fields: [encounterId], references: [id])
-  priority     String         @default("ROUTINE") // ROUTINE, URGENT, STAT
-  status       LabOrderStatus @default(REQUESTED)
+  id            String         @id @default(cuid())
+  hospitalId    String         @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital      Hospital       @relation(fields: [hospitalId], references: [id])
+  orderNo       String
+  patientId     String
+  patient       Patient        @relation(fields: [patientId], references: [id])
+  doctorId      String
+  doctor        DoctorProfile  @relation(fields: [doctorId], references: [id])
+  encounterId   String?
+  encounter     Encounter?     @relation(fields: [encounterId], references: [id])
+  priority      String         @default("ROUTINE") // ROUTINE, URGENT, STAT
+  status        LabOrderStatus @default(REQUESTED)
   clinicalNotes String?
-  cancelReason String?
-  releasedAt   DateTime?      @db.Timestamptz(3)
-  releasedById String?
-  createdAt    DateTime       @default(now()) @db.Timestamptz(3)
-  updatedAt    DateTime       @updatedAt @db.Timestamptz(3)
-  items        LabOrderItem[]
-  specimens    Specimen[]
+  cancelReason  String?
+  releasedAt    DateTime?      @db.Timestamptz(3)
+  releasedById  String?
+  releasedBy    User?          @relation("LabOrderReleasedBy", fields: [releasedById], references: [id], onDelete: Restrict)
+  createdAt     DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime       @updatedAt @db.Timestamptz(3)
+  items         LabOrderItem[]
+  specimens     Specimen[]
 
-  @@index([status, createdAt])
+  @@unique([hospitalId, orderNo])
+  @@index([hospitalId, status, createdAt])
   @@index([patientId])
+  @@index([doctorId])
+  @@index([encounterId])
+  @@index([releasedById])
 }
 
 model LabOrderItem {
-  id        String         @id @default(cuid())
-  orderId   String
-  order     LabOrder       @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  testId    String
-  test      LaboratoryTest @relation(fields: [testId], references: [id])
-  price     Decimal        @db.Decimal(12, 2)
-  results   LabResult[]
+  id         String         @id @default(cuid())
+  hospitalId String         @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital       @relation(fields: [hospitalId], references: [id])
+  orderId    String
+  order      LabOrder       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  testId     String
+  test       LaboratoryTest @relation(fields: [testId], references: [id])
+  price      Decimal        @db.Decimal(12, 2)
+  results    LabResult[]
+
+  @@index([orderId])
+  @@index([testId])
+  @@index([hospitalId])
 }
 
 model Specimen {
-  id            String    @id @default(cuid())
-  orderId       String
-  order         LabOrder  @relation(fields: [orderId], references: [id])
-  specimenNo    String    @unique
-  type          String
-  collectedAt   DateTime  @default(now()) @db.Timestamptz(3)
-  collectedById String
-  status        String    @default("COLLECTED") // COLLECTED, REJECTED
+  id              String   @id @default(cuid())
+  hospitalId      String   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital        Hospital @relation(fields: [hospitalId], references: [id])
+  orderId         String
+  order           LabOrder @relation(fields: [orderId], references: [id])
+  specimenNo      String
+  type            String
+  collectedAt     DateTime @default(now()) @db.Timestamptz(3)
+  collectedById   String
+  collectedBy     User     @relation("SpecimenCollectedBy", fields: [collectedById], references: [id], onDelete: Restrict)
+  status          String   @default("COLLECTED") // COLLECTED, REJECTED
   rejectionReason String?
+
+  @@unique([hospitalId, specimenNo])
+  @@index([orderId])
+  @@index([collectedById])
 }
 
 model LabResult {
-  id            String       @id @default(cuid())
-  orderItemId   String
-  orderItem     LabOrderItem @relation(fields: [orderItemId], references: [id])
-  value         String
-  numericValue  Decimal?     @db.Decimal(12, 3)
-  unit          String?
-  referenceRange String?
-  flag          String?      // LOW, HIGH, NORMAL, ABNORMAL — derived from configured range only
-  comment       String?
-  isCurrent     Boolean      @default(true) // corrections create a new row, old row isCurrent=false
-  enteredById   String
-  enteredAt     DateTime     @default(now()) @db.Timestamptz(3)
-  validatedById String?
-  validatedAt   DateTime?    @db.Timestamptz(3)
+  id               String       @id @default(cuid())
+  hospitalId       String       @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital         Hospital     @relation(fields: [hospitalId], references: [id])
+  orderItemId      String
+  orderItem        LabOrderItem @relation(fields: [orderItemId], references: [id])
+  value            String
+  numericValue     Decimal?     @db.Decimal(12, 3)
+  unit             String?
+  referenceRange   String?
+  flag             String? // LOW, HIGH, NORMAL, ABNORMAL — derived from configured range only
+  comment          String?
+  isCurrent        Boolean      @default(true) // corrections create a new row, old row isCurrent=false
+  enteredById      String
+  enteredBy        User         @relation("LabResultEnteredBy", fields: [enteredById], references: [id], onDelete: Restrict)
+  enteredAt        DateTime     @default(now()) @db.Timestamptz(3)
+  validatedById    String?
+  validatedBy      User?        @relation("LabResultValidatedBy", fields: [validatedById], references: [id], onDelete: Restrict)
+  validatedAt      DateTime?    @db.Timestamptz(3)
   correctionReason String?
 
   @@index([orderItemId, isCurrent])
+  @@index([hospitalId])
+  @@index([enteredById])
+  @@index([validatedById])
 }
 
 // ───────────────────────────── Radiology ─────────────────────────────
@@ -926,66 +1250,92 @@ enum ImagingStatus {
 }
 
 model ImagingStudy {
-  id          String        @id @default(cuid())
-  studyNo     String        @unique
-  patientId   String
-  patient     Patient       @relation(fields: [patientId], references: [id])
-  encounterId String?
-  encounter   Encounter?    @relation(fields: [encounterId], references: [id])
+  id            String         @id @default(cuid())
+  hospitalId    String         @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital      Hospital       @relation(fields: [hospitalId], references: [id])
+  studyNo       String
+  patientId     String
+  patient       Patient        @relation(fields: [patientId], references: [id])
+  encounterId   String?
+  encounter     Encounter?     @relation(fields: [encounterId], references: [id])
   requestedById String
-  modality    String        // XRAY, CT, MRI, US
-  bodyPart    String
-  indication  String?
-  price       Decimal       @db.Decimal(12, 2)
-  scheduledAt DateTime?     @db.Timestamptz(3)
-  status      ImagingStatus @default(REQUESTED)
-  createdAt   DateTime      @default(now()) @db.Timestamptz(3)
-  updatedAt   DateTime      @updatedAt @db.Timestamptz(3)
-  report      ImagingReport?
+  requestedBy   User           @relation("ImagingRequestedBy", fields: [requestedById], references: [id], onDelete: Restrict)
+  modality      String // XRAY, CT, MRI, US
+  bodyPart      String
+  indication    String?
+  price         Decimal        @db.Decimal(12, 2)
+  scheduledAt   DateTime?      @db.Timestamptz(3)
+  status        ImagingStatus  @default(REQUESTED)
+  createdAt     DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime       @updatedAt @db.Timestamptz(3)
+  report        ImagingReport?
 
-  @@index([status, createdAt])
+  @@unique([hospitalId, studyNo])
+  @@index([hospitalId, status, createdAt])
+  @@index([patientId])
+  @@index([encounterId])
+  @@index([requestedById])
 }
 
 model ImagingReport {
-  id          String       @id @default(cuid())
-  studyId     String       @unique
-  study       ImagingStudy @relation(fields: [studyId], references: [id])
-  findings    String
-  impression  String
+  id           String       @id @default(cuid())
+  hospitalId   String       @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital     @relation(fields: [hospitalId], references: [id])
+  studyId      String       @unique
+  study        ImagingStudy @relation(fields: [studyId], references: [id])
+  findings     String
+  impression   String
   reportedById String
-  reportedAt  DateTime     @default(now()) @db.Timestamptz(3)
+  reportedBy   User         @relation("ImagingReportedBy", fields: [reportedById], references: [id], onDelete: Restrict)
+  reportedAt   DateTime     @default(now()) @db.Timestamptz(3)
   verifiedById String?
-  verifiedAt  DateTime?    @db.Timestamptz(3)
+  verifiedBy   User?        @relation("ImagingVerifiedBy", fields: [verifiedById], references: [id], onDelete: Restrict)
+  verifiedAt   DateTime?    @db.Timestamptz(3)
+
+  @@index([hospitalId])
+  @@index([reportedById])
+  @@index([verifiedById])
 }
 
 // ───────────────────────────── Procedures / OT ─────────────────────────────
 
 model OperatingTheatre {
   id         String      @id @default(cuid())
-  name       String      @unique
+  hospitalId String      @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital    @relation(fields: [hospitalId], references: [id])
+  name       String
   isActive   Boolean     @default(true)
   procedures Procedure[]
+
+  @@unique([hospitalId, name])
 }
 
 model Procedure {
-  id          String           @id @default(cuid())
-  procedureNo String           @unique
-  patientId   String
-  patient     Patient          @relation(fields: [patientId], references: [id])
-  theatreId   String
-  theatre     OperatingTheatre @relation(fields: [theatreId], references: [id])
-  surgeonId   String
-  name        String
-  scheduledStart DateTime      @db.Timestamptz(3)
-  scheduledEnd   DateTime      @db.Timestamptz(3)
-  status      String           @default("SCHEDULED") // SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED
-  checklistComplete Boolean    @default(false)
-  notes       String?
-  postOpNotes String?
-  charge      Decimal          @db.Decimal(12, 2)
-  createdAt   DateTime         @default(now()) @db.Timestamptz(3)
+  id                String           @id @default(cuid())
+  hospitalId        String           @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital          Hospital         @relation(fields: [hospitalId], references: [id])
+  procedureNo       String
+  patientId         String
+  patient           Patient          @relation(fields: [patientId], references: [id])
+  theatreId         String
+  theatre           OperatingTheatre @relation(fields: [theatreId], references: [id])
+  surgeonId         String // DoctorProfile id
+  surgeon           DoctorProfile    @relation(fields: [surgeonId], references: [id], onDelete: Restrict)
+  name              String
+  scheduledStart    DateTime         @db.Timestamptz(3)
+  scheduledEnd      DateTime         @db.Timestamptz(3)
+  status            String           @default("SCHEDULED") // SCHEDULED, IN_PROGRESS, COMPLETED, CANCELLED
+  checklistComplete Boolean          @default(false)
+  notes             String?
+  postOpNotes       String?
+  charge            Decimal          @db.Decimal(12, 2)
+  createdAt         DateTime         @default(now()) @db.Timestamptz(3)
 
+  @@unique([hospitalId, procedureNo])
   @@index([theatreId, scheduledStart])
+  @@index([surgeonId, scheduledStart])
+  @@index([hospitalId, scheduledStart])
+  @@index([patientId])
 }
 
 // ───────────────────────────── Billing ─────────────────────────────
@@ -1000,38 +1350,45 @@ enum InvoiceStatus {
 }
 
 model Invoice {
-  id            String        @id @default(cuid())
-  invoiceNo     String        @unique
-  patientId     String
-  patient       Patient       @relation(fields: [patientId], references: [id])
-  status        InvoiceStatus @default(DRAFT)
-  subtotal      Decimal       @default(0) @db.Decimal(12, 2)
-  discountTotal Decimal       @default(0) @db.Decimal(12, 2)
-  taxTotal      Decimal       @default(0) @db.Decimal(12, 2)
-  total         Decimal       @default(0) @db.Decimal(12, 2)
-  amountPaid    Decimal       @default(0) @db.Decimal(12, 2)
-  amountRefunded Decimal      @default(0) @db.Decimal(12, 2)
-  balance       Decimal       @default(0) @db.Decimal(12, 2)
+  id             String           @id @default(cuid())
+  hospitalId     String           @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital       Hospital         @relation(fields: [hospitalId], references: [id])
+  invoiceNo      String
+  patientId      String
+  patient        Patient          @relation(fields: [patientId], references: [id])
+  status         InvoiceStatus    @default(DRAFT)
+  subtotal       Decimal          @default(0) @db.Decimal(12, 2)
+  discountTotal  Decimal          @default(0) @db.Decimal(12, 2)
+  taxTotal       Decimal          @default(0) @db.Decimal(12, 2)
+  total          Decimal          @default(0) @db.Decimal(12, 2)
+  amountPaid     Decimal          @default(0) @db.Decimal(12, 2)
+  amountRefunded Decimal          @default(0) @db.Decimal(12, 2)
+  balance        Decimal          @default(0) @db.Decimal(12, 2)
   discountReason String?
-  issuedAt      DateTime?     @db.Timestamptz(3)
-  voidReason    String?
-  createdById   String?
-  createdAt     DateTime      @default(now()) @db.Timestamptz(3)
-  updatedAt     DateTime      @updatedAt @db.Timestamptz(3)
-  items         InvoiceItem[]
-  payments      Payment[]
-  refunds       Refund[]
-  claims        InsuranceClaim[]
+  issuedAt       DateTime?        @db.Timestamptz(3)
+  voidReason     String?
+  createdById    String?
+  createdBy      User?            @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt      DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt      DateTime         @updatedAt @db.Timestamptz(3)
+  items          InvoiceItem[]
+  payments       Payment[]
+  refunds        Refund[]
+  claims         InsuranceClaim[]
 
-  @@index([status, createdAt])
+  @@unique([hospitalId, invoiceNo])
+  @@index([hospitalId, status, createdAt])
   @@index([patientId])
+  @@index([createdById])
 }
 
 model InvoiceItem {
   id          String     @id @default(cuid())
+  hospitalId  String     @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital    Hospital   @relation(fields: [hospitalId], references: [id])
   invoiceId   String
   invoice     Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  category    String     // CONSULTATION, LAB, IMAGING, PHARMACY, PROCEDURE, BED, MISC
+  category    String // CONSULTATION, LAB, IMAGING, PHARMACY, PROCEDURE, BED, MISC
   description String
   quantity    Int        @default(1)
   unitPrice   Decimal    @db.Decimal(12, 2)
@@ -1043,128 +1400,181 @@ model InvoiceItem {
   encounterId String?
   encounter   Encounter? @relation(fields: [encounterId], references: [id])
 
-  @@index([sourceType, sourceId])
+  @@index([invoiceId])
+  @@index([encounterId])
+  @@index([hospitalId, sourceType, sourceId])
 }
 
 model Payment {
   id             String   @id @default(cuid())
-  receiptNo      String   @unique
+  hospitalId     String   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital       Hospital @relation(fields: [hospitalId], references: [id])
+  receiptNo      String
   invoiceId      String
   invoice        Invoice  @relation(fields: [invoiceId], references: [id])
   amount         Decimal  @db.Decimal(12, 2)
-  method         String   // CASH, CARD, BANK_TRANSFER
+  method         String // CASH, CARD, BANK_TRANSFER
   reference      String?
-  idempotencyKey String?  @unique
+  idempotencyKey String?
   receivedById   String
+  receivedBy     User     @relation("PaymentReceivedBy", fields: [receivedById], references: [id], onDelete: Restrict)
   receivedAt     DateTime @default(now()) @db.Timestamptz(3)
 
-  @@index([receivedAt])
+  @@unique([hospitalId, receiptNo])
+  @@unique([hospitalId, idempotencyKey])
+  @@index([hospitalId, receivedAt])
+  @@index([invoiceId])
+  @@index([receivedById])
 }
 
 model Refund {
   id           String   @id @default(cuid())
+  hospitalId   String   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital @relation(fields: [hospitalId], references: [id])
   invoiceId    String
   invoice      Invoice  @relation(fields: [invoiceId], references: [id])
   amount       Decimal  @db.Decimal(12, 2)
   reason       String
   method       String
   approvedById String
+  approvedBy   User     @relation("RefundApprovedBy", fields: [approvedById], references: [id], onDelete: Restrict)
   createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  @@index([hospitalId, createdAt])
+  @@index([invoiceId])
+  @@index([approvedById])
 }
 
 // ───────────────────────────── Insurance ─────────────────────────────
 
 model InsuranceProvider {
-  id       String            @id @default(cuid())
-  name     String            @unique
-  phone    String?
-  email    String?
-  isActive Boolean           @default(true)
-  policies InsurancePolicy[]
+  id         String            @id @default(cuid())
+  hospitalId String            @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital          @relation(fields: [hospitalId], references: [id])
+  name       String
+  phone      String?
+  email      String?
+  isActive   Boolean           @default(true)
+  policies   InsurancePolicy[]
+
+  @@unique([hospitalId, name])
 }
 
 model InsurancePolicy {
-  id          String            @id @default(cuid())
-  patientId   String
-  patient     Patient           @relation(fields: [patientId], references: [id])
-  providerId  String
-  provider    InsuranceProvider @relation(fields: [providerId], references: [id])
-  policyNumber String
-  coverageStart DateTime        @db.Date
-  coverageEnd   DateTime        @db.Date
+  id            String            @id @default(cuid())
+  hospitalId    String            @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital      Hospital          @relation(fields: [hospitalId], references: [id])
+  patientId     String
+  patient       Patient           @relation(fields: [patientId], references: [id])
+  providerId    String
+  provider      InsuranceProvider @relation(fields: [providerId], references: [id])
+  policyNumber  String
+  coverageStart DateTime          @db.Date
+  coverageEnd   DateTime          @db.Date
   coverageNotes String?
-  isActive    Boolean           @default(true)
-  claims      InsuranceClaim[]
+  isActive      Boolean           @default(true)
+  claims        InsuranceClaim[]
 
   @@unique([providerId, policyNumber])
+  @@index([patientId])
+  @@index([hospitalId])
 }
 
 model InsuranceClaim {
-  id            String          @id @default(cuid())
-  claimNo       String          @unique
-  policyId      String
-  policy        InsurancePolicy @relation(fields: [policyId], references: [id])
-  invoiceId     String
-  invoice       Invoice         @relation(fields: [invoiceId], references: [id])
-  claimAmount   Decimal         @db.Decimal(12, 2)
-  approvedAmount Decimal?       @db.Decimal(12, 2)
-  status        String          @default("SUBMITTED") // DRAFT, SUBMITTED, APPROVED, PARTIALLY_APPROVED, REJECTED, PAID
+  id              String          @id @default(cuid())
+  hospitalId      String          @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital        Hospital        @relation(fields: [hospitalId], references: [id])
+  claimNo         String
+  policyId        String
+  policy          InsurancePolicy @relation(fields: [policyId], references: [id])
+  invoiceId       String
+  invoice         Invoice         @relation(fields: [invoiceId], references: [id])
+  claimAmount     Decimal         @db.Decimal(12, 2)
+  approvedAmount  Decimal?        @db.Decimal(12, 2)
+  status          String          @default("SUBMITTED") // DRAFT, SUBMITTED, APPROVED, PARTIALLY_APPROVED, REJECTED, PAID
   rejectionReason String?
-  submittedAt   DateTime?       @db.Timestamptz(3)
-  createdAt     DateTime        @default(now()) @db.Timestamptz(3)
+  submittedAt     DateTime?       @db.Timestamptz(3)
+  createdAt       DateTime        @default(now()) @db.Timestamptz(3)
+
+  @@unique([hospitalId, claimNo])
+  @@index([hospitalId, status])
+  @@index([policyId])
+  @@index([invoiceId])
 }
 
 // ───────────────────────────── Inventory & procurement ─────────────────────────────
 
 model Supplier {
-  id        String            @id @default(cuid())
-  name      String            @unique
-  phone     String?
-  email     String?
-  address   String?
-  isActive  Boolean           @default(true)
-  batches   MedicationBatch[]
+  id             String            @id @default(cuid())
+  hospitalId     String            @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital       Hospital          @relation(fields: [hospitalId], references: [id])
+  name           String
+  phone          String?
+  email          String?
+  address        String?
+  isActive       Boolean           @default(true)
+  batches        MedicationBatch[]
   purchaseOrders PurchaseOrder[]
+
+  @@unique([hospitalId, name])
 }
 
 model InventoryItem {
-  id           String   @id @default(cuid())
-  code         String   @unique
-  name         String
-  category     String   // CONSUMABLE, EQUIPMENT, SUPPLY
-  unit         String
-  quantity     Int      @default(0)
-  reorderLevel Int      @default(10)
-  unitCost     Decimal  @db.Decimal(12, 2)
-  location     String?
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+  id             String              @id @default(cuid())
+  hospitalId     String              @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital       Hospital            @relation(fields: [hospitalId], references: [id])
+  code           String
+  name           String
+  category       String // CONSUMABLE, EQUIPMENT, SUPPLY
+  unit           String
+  quantity       Int                 @default(0)
+  reorderLevel   Int                 @default(10)
+  unitCost       Decimal             @db.Decimal(12, 2)
+  location       String?
+  isActive       Boolean             @default(true)
+  createdAt      DateTime            @default(now()) @db.Timestamptz(3)
   stockMovements StockMovement[]
-  purchaseItems PurchaseOrderItem[]
+  purchaseItems  PurchaseOrderItem[]
+
+  @@unique([hospitalId, code])
 }
 
 model PurchaseOrder {
-  id         String              @id @default(cuid())
-  poNumber   String              @unique
-  supplierId String
-  supplier   Supplier            @relation(fields: [supplierId], references: [id])
-  status     String              @default("DRAFT") // DRAFT, ORDERED, RECEIVED, CANCELLED
-  orderedAt  DateTime?           @db.Timestamptz(3)
-  receivedAt DateTime?           @db.Timestamptz(3)
-  total      Decimal             @default(0) @db.Decimal(12, 2)
+  id          String              @id @default(cuid())
+  hospitalId  String              @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital    Hospital            @relation(fields: [hospitalId], references: [id])
+  poNumber    String
+  supplierId  String
+  supplier    Supplier            @relation(fields: [supplierId], references: [id])
+  status      String              @default("DRAFT") // DRAFT, ORDERED, RECEIVED, CANCELLED
+  orderedAt   DateTime?           @db.Timestamptz(3)
+  receivedAt  DateTime?           @db.Timestamptz(3)
+  total       Decimal             @default(0) @db.Decimal(12, 2)
   createdById String?
-  createdAt  DateTime            @default(now()) @db.Timestamptz(3)
-  items      PurchaseOrderItem[]
+  createdBy   User?               @relation("PurchaseOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt   DateTime            @default(now()) @db.Timestamptz(3)
+  items       PurchaseOrderItem[]
+
+  @@unique([hospitalId, poNumber])
+  @@index([hospitalId, status])
+  @@index([supplierId])
+  @@index([createdById])
 }
 
 model PurchaseOrderItem {
   id              String        @id @default(cuid())
+  hospitalId      String        @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital        Hospital      @relation(fields: [hospitalId], references: [id])
   purchaseOrderId String
   purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   inventoryItemId String
   inventoryItem   InventoryItem @relation(fields: [inventoryItemId], references: [id])
   quantity        Int
   unitCost        Decimal       @db.Decimal(12, 2)
+
+  @@index([purchaseOrderId])
+  @@index([inventoryItemId])
+  @@index([hospitalId])
 }
 
 enum StockMovementType {
@@ -1180,6 +1590,8 @@ enum StockMovementType {
 // Append-only ledger. Exactly one of medicationId / inventoryItemId is set.
 model StockMovement {
   id              String            @id @default(cuid())
+  hospitalId      String            @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital        Hospital          @relation(fields: [hospitalId], references: [id])
   type            StockMovementType
   medicationId    String?
   medication      Medication?       @relation(fields: [medicationId], references: [id])
@@ -1187,68 +1599,89 @@ model StockMovement {
   batch           MedicationBatch?  @relation(fields: [batchId], references: [id])
   inventoryItemId String?
   inventoryItem   InventoryItem?    @relation(fields: [inventoryItemId], references: [id])
-  quantity        Int               // signed: + in, - out
+  quantity        Int // signed: + in, - out
   balanceAfter    Int
   reason          String?
   referenceType   String?
   referenceId     String?
   performedById   String
+  performedBy     User              @relation("StockMovementPerformedBy", fields: [performedById], references: [id], onDelete: Restrict)
   createdAt       DateTime          @default(now()) @db.Timestamptz(3)
 
   @@index([medicationId, createdAt])
   @@index([inventoryItemId, createdAt])
+  @@index([batchId])
+  @@index([hospitalId, createdAt])
+  @@index([performedById])
 }
 
 // ───────────────────────────── Ambulance ─────────────────────────────
 
 model Ambulance {
-  id           String              @id @default(cuid())
-  vehicleNo    String              @unique
-  type         String              // BLS, ALS
-  status       String              @default("AVAILABLE") // AVAILABLE, DISPATCHED, MAINTENANCE
-  driverName   String?
-  driverPhone  String?
-  dispatches   AmbulanceDispatch[]
+  id          String              @id @default(cuid())
+  hospitalId  String              @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital    Hospital            @relation(fields: [hospitalId], references: [id])
+  vehicleNo   String
+  type        String // BLS, ALS
+  status      String              @default("AVAILABLE") // AVAILABLE, DISPATCHED, MAINTENANCE
+  driverName  String?
+  driverPhone String?
+  dispatches  AmbulanceDispatch[]
+
+  @@unique([hospitalId, vehicleNo])
 }
 
 model AmbulanceDispatch {
-  id          String          @id @default(cuid())
-  ambulanceId String
-  ambulance   Ambulance       @relation(fields: [ambulanceId], references: [id])
+  id               String          @id @default(cuid())
+  hospitalId       String          @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital         Hospital        @relation(fields: [hospitalId], references: [id])
+  ambulanceId      String
+  ambulance        Ambulance       @relation(fields: [ambulanceId], references: [id])
   emergencyVisitId String?
-  emergencyVisit EmergencyVisit? @relation(fields: [emergencyVisitId], references: [id])
-  pickupAddress String
-  destination String
-  callerName  String?
-  callerPhone String?
-  dispatchedAt DateTime       @default(now()) @db.Timestamptz(3)
-  arrivedAt   DateTime?       @db.Timestamptz(3)
-  completedAt DateTime?       @db.Timestamptz(3)
-  status      String          @default("DISPATCHED") // DISPATCHED, ON_SCENE, TRANSPORTING, COMPLETED, CANCELLED
-  createdById String?
+  emergencyVisit   EmergencyVisit? @relation(fields: [emergencyVisitId], references: [id])
+  pickupAddress    String
+  destination      String
+  callerName       String?
+  callerPhone      String?
+  dispatchedAt     DateTime        @default(now()) @db.Timestamptz(3)
+  arrivedAt        DateTime?       @db.Timestamptz(3)
+  completedAt      DateTime?       @db.Timestamptz(3)
+  status           String          @default("DISPATCHED") // DISPATCHED, ON_SCENE, TRANSPORTING, COMPLETED, CANCELLED
+  createdById      String?
+  createdBy        User?           @relation("DispatchCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([hospitalId, dispatchedAt])
+  @@index([ambulanceId])
+  @@index([emergencyVisitId])
+  @@index([createdById])
 }
 
 // ───────────────────────────── Cross-cutting ─────────────────────────────
 
 model Notification {
-  id        String    @id @default(cuid())
-  userId    String
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  category  String    // APPOINTMENT, LAB, PHARMACY, BILLING, ADMISSION, HR, SYSTEM
-  title     String
-  body      String?
-  link      String?
-  readAt    DateTime? @db.Timestamptz(3)
-  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+  id         String    @id @default(cuid())
+  hospitalId String    @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital  @relation(fields: [hospitalId], references: [id])
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category   String // APPOINTMENT, LAB, PHARMACY, BILLING, ADMISSION, HR, SYSTEM
+  title      String
+  body       String?
+  link       String?
+  readAt     DateTime? @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
 
   @@index([userId, readAt])
+  @@index([hospitalId, createdAt])
 }
 
 model UploadedDocument {
   id           String   @id @default(cuid())
+  hospitalId   String   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital     Hospital @relation(fields: [hospitalId], references: [id])
   patientId    String?
   patient      Patient? @relation(fields: [patientId], references: [id])
-  ownerType    String   // PATIENT, STAFF, CLAIM, IMAGING
+  ownerType    String // PATIENT, STAFF, CLAIM, IMAGING
   ownerId      String
   category     String
   originalName String
@@ -1257,29 +1690,41 @@ model UploadedDocument {
   sizeBytes    Int
   sha256       String
   uploadedById String
+  uploadedBy   User     @relation("DocumentUploadedBy", fields: [uploadedById], references: [id], onDelete: Restrict)
   createdAt    DateTime @default(now()) @db.Timestamptz(3)
 
-  @@index([ownerType, ownerId])
+  @@index([hospitalId, ownerType, ownerId])
+  @@index([patientId])
+  @@index([uploadedById])
 }
 
+// hospitalId is NULL only for platform-level events (hospital management, sign-in before a hospital
+// is selected). Hospital staff only ever see their own hospital's rows (RLS).
 model AuditLog {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
+  hospitalId String?   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital? @relation(fields: [hospitalId], references: [id])
   userId     String?
-  user       User?    @relation(fields: [userId], references: [id])
-  action     String   // e.g. patient.create, encounter.finalize, invoice.payment
+  user       User?     @relation(fields: [userId], references: [id])
+  action     String // e.g. patient.create, encounter.finalize, invoice.payment
   entityType String
   entityId   String?
   metadata   Json?
   ipAddress  String?
-  createdAt  DateTime @default(now()) @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
 
-  @@index([entityType, entityId])
+  @@index([hospitalId, entityType, entityId])
+  @@index([hospitalId, createdAt])
   @@index([userId, createdAt])
   @@index([createdAt])
 }
 
-// Atomic per-key counters for human-readable identifiers (MRN, invoice no., …)
+// Atomic per-hospital counters for human-readable identifiers (MRN, invoice no., …)
 model Sequence {
-  key   String @id
-  value Int    @default(0)
+  hospitalId String   @default(dbgenerated("hms_internal.current_hospital_id()"))
+  hospital   Hospital @relation(fields: [hospitalId], references: [id])
+  key        String
+  value      Int      @default(0)
+
+  @@id([hospitalId, key])
 }

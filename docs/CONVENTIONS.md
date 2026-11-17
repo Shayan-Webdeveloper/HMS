@@ -78,4 +78,4 @@ Billing discovers unbilled charges by looking for source rows (`Encounter` final
 - Lint: `npx eslint <your paths>`.
 - Build in an isolated output folder so parallel work doesn't collide: `NEXT_DIST_DIR=.next-<name> npx next build`.
 - Unit tests for pure logic go in `tests/unit/<module>.test.js` (`npx vitest run tests/unit/<module>.test.js`).
-- Dev DB has seeded demo data; demo password is `DemoPass2026` (dev only). Do not re-run the seed — other work shares the database.
+- Dev DB has seeded demo data; the demo password is whatever `SEED_DEMO_PASSWORD` was set to locally (never written into tracked files). Do not re-run the seed against a shared database.

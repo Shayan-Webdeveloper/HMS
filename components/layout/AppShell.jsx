@@ -11,7 +11,9 @@ function NavIcon({ name }) {
   return <I size={18} aria-hidden />;
 }
 
-export function AppShell({ nav, user, hospital, children, portal = false, todayLabel }) {
+// platform: Platform Administrator console (no hospital context: no search, no notifications).
+export function AppShell({ nav, user, hospital, hospitals = [], children, portal = false, platform = false, todayLabel }) {
+  const flat = portal || platform;
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -40,11 +42,11 @@ export function AppShell({ nav, user, hospital, children, portal = false, todayL
           </div>
           <div className="nav-text min-w-0">
             <p className="text-white font-semibold text-[14px] leading-tight truncate">{hospital.name}</p>
-            <p className="text-[11px] text-[#8896b3] truncate">{portal ? "Patient portal" : "Hospital Management"}</p>
+            <p className="text-[11px] text-[#8896b3] truncate">{portal ? "Patient portal" : platform ? "Platform administration" : "Hospital Management"}</p>
           </div>
         </div>
         <nav className="sidebar-nav">
-          {portal ? (
+          {flat ? (
             <ul className="space-y-0.5 pt-2">
               {nav.map((i) => (
                 <li key={i.href}>
@@ -84,15 +86,43 @@ export function AppShell({ nav, user, hospital, children, portal = false, todayL
             <button type="button" className="btn btn-ghost btn-icon lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Menu size={18} /></button>
             <Breadcrumbs pathname={pathname} />
             <div className="flex-1" />
-            {!portal && <GlobalSearch />}
+            {hospitals.length > 1 && <HospitalSwitcher current={hospital} hospitals={hospitals} />}
+            {!flat && <GlobalSearch />}
             <span className="hidden xl:inline-flex items-center gap-1.5 text-[12.5px] text-muted"><CalendarDays size={14} aria-hidden />{todayLabel}</span>
-            <NotificationBell portal={portal} />
+            {!platform && <NotificationBell portal={portal} />}
             <UserMenu user={user} />
           </div>
         </header>
         <main id="main" className="page" tabIndex={-1}>{children}</main>
       </div>
     </div>
+  );
+}
+
+// Only hospitals the server listed for this user (active memberships) are offered; the server
+// re-verifies membership on the switch and on every later request.
+function HospitalSwitcher({ current, hospitals }) {
+  const [busy, setBusy] = useState(false);
+  async function change(e) {
+    const hospitalId = e.target.value;
+    if (!hospitalId || hospitalId === current.id) return;
+    setBusy(true);
+    try {
+      const r = await api("/api/auth/hospital", { method: "POST", body: { hospitalId } });
+      // Full reload so no data from the previous hospital survives in client state.
+      window.location.assign(r.data.redirect || "/dashboard");
+    } catch {
+      toast.error("Could not switch hospital");
+      setBusy(false);
+    }
+  }
+  return (
+    <label className="hidden md:flex items-center gap-1.5 text-[12.5px] text-muted">
+      <span className="sr-only sm:not-sr-only">Hospital</span>
+      <select className="input h-9 py-0 w-[200px]" value={current.id} onChange={change} disabled={busy} aria-label="Switch hospital">
+        {hospitals.map((h) => <option key={h.id} value={h.id}>{h.name}</option>)}
+      </select>
+    </label>
   );
 }
 
