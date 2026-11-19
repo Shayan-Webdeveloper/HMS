@@ -4,6 +4,7 @@ import { unauthorized } from "@/lib/errors";
 
 export const POST = route({ public: true }, async ({ session }) => {
   if (!session) throw unauthorized();
+  if (!session.hospitalId) return { updated: 0 }; // notifications are per hospital; none without one
   const r = await prisma.notification.updateMany({ where: { userId: session.user.id, readAt: null }, data: { readAt: new Date() } });
   return { updated: r.count };
 });

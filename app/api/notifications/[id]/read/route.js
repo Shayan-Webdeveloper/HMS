@@ -4,6 +4,7 @@ import { unauthorized, notFound } from "@/lib/errors";
 
 export const POST = route({ public: true }, async ({ session, params }) => {
   if (!session) throw unauthorized();
+  if (!session.hospitalId) throw notFound(); // notifications are per hospital; none without one
   // Ownership enforced in the WHERE clause — another user's id simply matches nothing.
   const r = await prisma.notification.updateMany({ where: { id: params.id, userId: session.user.id }, data: { readAt: new Date() } });
   if (!r.count) throw notFound();
