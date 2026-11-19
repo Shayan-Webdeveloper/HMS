@@ -9,6 +9,9 @@ const q = z.object({ limit: z.coerce.number().int().min(1).max(100).optional().d
 export const GET = route({ public: true }, async ({ session, query }) => {
   if (!session) throw unauthorized();
   const { limit, unread, category } = query(q);
+  // Notifications belong to a hospital. Without a hospital context (Platform Administrator, or no active
+  // membership) there are none — e.g. a hospital tab still polling after the browser switched accounts.
+  if (!session.hospitalId) return { items: [], unread: 0 };
   const where = { userId: session.user.id, ...(unread === "1" ? { readAt: null } : {}), ...(category ? { category } : {}) };
   const [items, unreadCount] = await Promise.all([
     prisma.notification.findMany({ where, orderBy: { createdAt: "desc" }, take: limit }),
