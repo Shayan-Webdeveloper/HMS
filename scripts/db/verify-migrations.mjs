@@ -35,6 +35,18 @@ try {
   }
   await owner.end();
   console.log(`Applied ${applied.length} baseline migration(s): ${applied.join(", ")}`);
+  // Baseline migrations may seed rows (e.g. the permission catalogue). The backup already contains
+  // those rows as they were in production, so it is the authoritative copy: empty the seeded tables.
+  const sup = new pg.Client({ connectionString: db.superUrl });
+  await sup.connect();
+  const { rows: seeded } = await sup.query(`SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename <> '_prisma_migrations'`);
+  const nonEmpty = [];
+  for (const { tablename } of seeded) if ((await sup.query(`SELECT EXISTS (SELECT 1 FROM public."${tablename}") AS has`)).rows[0].has) nonEmpty.push(tablename);
+  if (nonEmpty.length) {
+    await sup.query(`TRUNCATE ${nonEmpty.map((t) => `public."${t}"`).join(", ")} CASCADE`);
+    console.log(`Emptied ${nonEmpty.length} table(s) seeded by baseline migrations (restored from the backup instead): ${nonEmpty.join(", ")}`);
+  }
+  await sup.end();
   await restoreBackup(dir, db.superUrl);
   console.log("Restored backup.");
 
@@ -55,10 +67,15 @@ try {
   const { rows: cols } = await c.query(`SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND column_name='hospitalId'`);
   let wrong = 0;
   for (const { table_name } of cols) {
-    const { rows } = await c.query(`SELECT count(*)::int AS n FROM public."${table_name}" WHERE "hospitalId" IS DISTINCT FROM $1 AND NOT ($2 AND "hospitalId" IS NULL)`, [hosp[0]?.id, table_name === "AuditLog"]);
-    if (rows[0].n) { wrong += rows[0].n; console.log(`  ${table_name}: ${rows[0].n} row(s) not assigned to the hospital`); }
+    // Single-hospital databases (the multi-hospital upgrade): every row must belong to that hospital.
+    // With several hospitals: every row must belong to SOME existing hospital (audit rows may be NULL).
+    const nullable = table_name === "AuditLog";
+    const { rows } = hosp.length === 1
+      ? await c.query(`SELECT count(*)::int AS n FROM public."${table_name}" WHERE "hospitalId" IS DISTINCT FROM $1 AND NOT ($2 AND "hospitalId" IS NULL)`, [hosp[0].id, nullable])
+      : await c.query(`SELECT count(*)::int AS n FROM public."${table_name}" t WHERE NOT ($1 AND t."hospitalId" IS NULL) AND NOT EXISTS (SELECT 1 FROM "Hospital" h WHERE h.id = t."hospitalId")`, [nullable]);
+    if (rows[0].n) { wrong += rows[0].n; console.log(`  ${table_name}: ${rows[0].n} row(s) not assigned to an existing hospital`); }
   }
-  check(wrong === 0, `all rows in ${cols.length} hospital-owned tables belong to the existing hospital`);
+  check(wrong === 0, `all rows in ${cols.length} hospital-owned tables belong to ${hosp.length === 1 ? "the existing hospital" : `one of the ${hosp.length} existing hospitals`}`);
   const { rows: mem } = await c.query(`SELECT (SELECT count(DISTINCT "userId") FROM "UserRole")::int AS users, (SELECT count(*) FROM "HospitalMembership")::int AS members`);
   check(mem[0].users === mem[0].members, `memberships created for ${mem[0].members}/${mem[0].users} users with roles`);
   const { rows: rls } = await c.query(`SELECT count(*)::int AS n FROM pg_tables t WHERE schemaname='public' AND tablename <> '_prisma_migrations' AND NOT EXISTS (SELECT 1 FROM pg_policies p WHERE p.schemaname='public' AND p.tablename=t.tablename) AND tablename NOT IN ('PasswordResetToken','RateLimitBucket')`);

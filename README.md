@@ -108,8 +108,8 @@ See `.env.example` (placeholders only — never commit `.env`).
 | `npm run dev` | Development server |
 | `npm run build` / `npm run start` | Production build / serve |
 | `npm run lint` | ESLint (flat config, `eslint-config-next`) |
-| `npm run test` | Unit tests (235: money, time zones, CSV safety, permissions, document authorisation, tenant scoping, scheduling, FEFO, billing, state machines, …) |
-| `npm run test:db` | 23 database-level isolation tests on a throwaway embedded PostgreSQL (RLS, guards, API roles, pooled-connection safety) — no external database needed |
+| `npm run test` | Unit tests (244: money, time zones, CSV safety, permissions, document authorisation, tenant scoping, scheduling, FEFO, billing, state machines, …) |
+| `npm run test:db` | 26 database-level isolation tests on a throwaway embedded PostgreSQL (RLS, guards, API roles, pooled-connection safety, hospital-context function hardening) — no external database needed |
 | `npm run test:e2e` | 65 HTTP tests (cross-module workflow + multi-hospital isolation attacks) against a **running server with demo data** |
 | `npm run db:deploy` | Apply migrations (`prisma migrate deploy`) |
 | `npm run db:migrate` | Create a new migration after editing `prisma/schema.prisma` (dev only) |
@@ -136,7 +136,7 @@ The suite runs the full patient journey. A receptionist registers a patient, the
 ### Vercel + Supabase
 
 1. Supabase: use the **transaction pooler** connection string (port 6543) for `DATABASE_URL` in Vercel. Apply migrations from your machine (`npm run db:backup`, then `npm run db:deploy`) — not during the Vercel build.
-2. Supabase → Project Settings → Data API: remove `public` from the exposed schemas (the app does not use the Data API).
+2. Supabase → Integrations → Data API: switch "Enable Data API" off (the app does not use it; done for this project). If it must stay on, remove `public` from the exposed schemas.
 3. `FILE_STORAGE_PROVIDER=supabase`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, then `npm run storage:setup` once (Vercel's file system is not persistent).
 4. Vercel → Environment Variables: `DATABASE_URL`, `AUTH_SECRET`, `APP_URL` (the Vercel URL), the storage variables, optional SMTP. Add `ALLOW_DEMO_ACCOUNTS=true` **only** for a demo deployment with synthetic data.
 5. Deploy; check `/api/health`.

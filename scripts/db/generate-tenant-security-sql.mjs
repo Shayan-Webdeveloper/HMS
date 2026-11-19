@@ -48,9 +48,11 @@ export function generateTenantSecuritySql() {
 CREATE SCHEMA IF NOT EXISTS hms_internal;
 REVOKE ALL ON SCHEMA hms_internal FROM PUBLIC;
 
+-- SECURITY INVOKER on purpose: it reads the CALLER's transaction setting. The fixed search_path
+-- (pg_catalog only) and the schema-qualified call mean no object on the caller's path can hijack it.
 CREATE OR REPLACE FUNCTION hms_internal.current_hospital_id() RETURNS text
-LANGUAGE sql STABLE PARALLEL SAFE
-AS $$ SELECT NULLIF(current_setting('app.hospital_id', true), '') $$;
+LANGUAGE sql STABLE PARALLEL SAFE SECURITY INVOKER SET search_path = pg_catalog
+AS $$ SELECT NULLIF(pg_catalog.current_setting('app.hospital_id', true), '') $$;
 
 -- Rejects cross-hospital references and hospital reassignment. SECURITY DEFINER so it can see the
 -- referenced row even when RLS would hide it from the caller (that is exactly the case to reject).
