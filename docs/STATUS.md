@@ -2,9 +2,12 @@
 
 Legend: ✅ implemented and verified (automated tests and/or scripted HTTP checks) · 🟡 implemented with a documented limitation · ⬜ not implemented
 
-Verification at delivery: `npm run lint` clean · `npm run build` succeeds (271 routes) · `npm run test` 222/222 · `npm run test:e2e` 33/33 against a seeded server · key screens visually reviewed in headless Chromium at desktop and phone widths.
+## Current verification
 
-**Latest verification — 2026-11-19 (security hardening, commit on branch `security/final-hardening`), all re-run, nothing copied from earlier commits:**
+**2026-11-19 — the security hardening merged to `main` in PR #6 (merge commit `90ba11f`).** Every result below
+was re-run for that code; none is copied from an earlier commit message. **No test was skipped.**
+Summary: lint clean · production build succeeds · 244 unit tests passed · 26 database tests passed ·
+65 HTTP-level end-to-end tests passed (not browser-driven).
 
 | Command | Result | Notes |
 |---|---|---|
@@ -21,14 +24,21 @@ Verification at delivery: `npm run lint` clean · `npm run build` succeeds (271 
 | Supabase Performance / Health Advisor | ✅ 0 errors, 0 warnings | Performance: 113 info, all "unused index" on a low-traffic database (expected); Health: none |
 | Supabase Data API | ✅ disabled | no exposed schemas; the app does not use it |
 
+### Historical verification (initial delivery — superseded, not re-run)
+
+Kept for reference only; these numbers predate the multi-hospital and security work and are **not** current:
+`npm run lint` clean · `npm run build` succeeded (271 routes) · `npm run test` 222/222 · `npm run test:e2e` 33/33
+against a seeded server · key screens visually reviewed in headless Chromium at desktop and phone widths.
+The route count and the browser-based visual review were not repeated in the current verification.
+
 ## Foundation
 | Feature | Status | Notes |
 |---|---|---|
-| PostgreSQL schema (67 tables), migrations, CHECK constraints | ✅ | `prisma/schema.prisma`, `prisma/migrations/*` |
+| PostgreSQL schema (68 tables), migrations, CHECK constraints | ✅ | `prisma/schema.prisma`, `prisma/migrations/*` (8 migrations) |
 | Seed with synthetic data (32+ patients, 130 appointments, encounters, labs, stock, invoices, admissions, ER, OT, insurance, HR) | ✅ | Dev-only, refuses production |
 | Auth: login, logout, sessions, idle/absolute expiry, lockout, rate limits | ✅ | |
 | Forgot / reset password, change password, forced change of temporary passwords | ✅ | |
-| RBAC: 11 roles × 66 permissions, server-enforced, editable matrix | ✅ | |
+| RBAC: 11 roles × 80 permissions, server-enforced, editable matrix | ✅ | Includes per-category document permissions |
 | Audit log (auth, views, exports, clinical & financial changes) | ✅ | |
 | App shell: collapsible sidebar, breadcrumbs, Ctrl-K global search, notifications, user menu, mobile nav | ✅ | |
 | Design system: tokens, buttons, forms, tables, badges, modals, tabs, skeletons, empty/error states, toasts | ✅ | |
@@ -104,6 +114,6 @@ Verification at delivery: `npm run lint` clean · `npm run build` succeeds (271 
 | Multi-facility within a hospital | 🟡 | `Facility` exists per hospital (wards belong to a facility); no per-facility access rules |
 | Unit tests | ✅ | 244 (verified 2026-11-19) |
 | Database isolation tests (embedded PostgreSQL) | ✅ | 26 (verified 2026-11-19) |
-| End-to-end tests | 🟡 | HTTP-level (33 workflow + 32 multi-hospital isolation) rather than browser-driven |
+| End-to-end tests | 🟡 | 65 (verified 2026-11-19): HTTP-level (33 workflow + 32 multi-hospital isolation) rather than browser-driven |
 | Redirect status codes | 🟡 | Because of the route-level loading UI, page redirects/404s stream as HTTP 200 and resolve client-side (no protected content is rendered) |
 | Regulatory certification (HIPAA / GDPR / local law) | ⬜ | Requires independent review |
