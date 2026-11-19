@@ -7,7 +7,11 @@ const url = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const bucket = process.env.SUPABASE_STORAGE_BUCKET || "hms-documents";
 if (!url || !key) { console.error("✖ Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY."); process.exit(1); }
-const headers = { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+// Same rule as storageAuthHeaders() in lib/storage (that module is server-only, so it is not imported
+// here): new secret keys (sb_secret_…) are not JWTs and go on the apikey header only; a legacy
+// service_role JWT keeps apikey + Authorization.
+const authHeaders = key.startsWith("sb_secret_") ? { apikey: key } : { apikey: key, Authorization: `Bearer ${key}` };
+const headers = { ...authHeaders, "Content-Type": "application/json" };
 
 const get = await fetch(`${url}/storage/v1/bucket/${encodeURIComponent(bucket)}`, { headers });
 if (get.ok) {
