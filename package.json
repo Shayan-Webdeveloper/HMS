@@ -22,7 +22,8 @@
     "test:db": "vitest run --config vitest.db.config.mjs",
     "db:backup": "node scripts/db/backup.mjs",
     "db:verify-migrations": "node scripts/db/verify-migrations.mjs",
-    "db:generate-tenant-sql": "node scripts/db/generate-tenant-security-sql.mjs"
+    "db:generate-tenant-sql": "node scripts/db/generate-tenant-security-sql.mjs",
+    "create-role-accounts": "node scripts/create-role-accounts.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
