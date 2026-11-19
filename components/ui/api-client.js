@@ -14,7 +14,9 @@ export async function api(url, { method = "GET", body, signal } = {}) {
   });
   let json = null;
   try { json = await res.json(); } catch { /* non-JSON */ }
-  if (res.status === 401 && typeof window !== "undefined") {
+  // Only a missing/expired session (UNAUTHENTICATED) means "sign in again". Other 401s — such as
+  // INVALID_CREDENTIALS from the login form — are ordinary errors shown to the user.
+  if (res.status === 401 && json?.error?.code === "UNAUTHENTICATED" && typeof window !== "undefined") {
     // Full reload on auth change so no stale client state survives sign-out.
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.assign("/login?expired=1");
