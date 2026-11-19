@@ -129,6 +129,35 @@ describe("database role and RLS (hms_app)", () => {
   });
 });
 
+describe("hospital-context helper function", () => {
+  it("current_hospital_id() has a fixed search_path and stays SECURITY INVOKER", async () => {
+    const { rows } = await owner.query(`SELECT p.prosecdef, p.proconfig, p.provolatile FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'hms_internal' AND p.proname = 'current_hospital_id'`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].prosecdef).toBe(false); // reads the caller's setting — must not run as the owner
+    expect(rows[0].proconfig).toEqual(["search_path=pg_catalog"]);
+    expect(rows[0].provolatile).toBe("s");
+  });
+
+  it("as hms_app it returns the transaction's hospital, and NULL without one", async () => {
+    expect((await asApp(A.id, "SELECT hms_internal.current_hospital_id() AS h")).rows[0].h).toBe(A.id);
+    expect((await asApp(B.id, "SELECT hms_internal.current_hospital_id() AS h")).rows[0].h).toBe(B.id);
+    expect((await asApp("", "SELECT hms_internal.current_hospital_id() AS h")).rows[0].h).toBeNull();
+  });
+
+  it("an object on the caller's search_path cannot hijack it", async () => {
+    await owner.query("BEGIN");
+    try {
+      await owner.query("CREATE SCHEMA evil");
+      await owner.query("CREATE FUNCTION evil.current_setting(text, boolean) RETURNS text LANGUAGE sql AS $$ SELECT 'HIJACKED' $$");
+      await owner.query("SELECT set_config('search_path', 'evil, pg_catalog, public', true), set_config('app.hospital_id', $1, true)", [A.id]);
+      expect((await owner.query("SELECT hms_internal.current_hospital_id() AS h")).rows[0].h).toBe(A.id);
+    } finally {
+      await owner.query("ROLLBACK");
+    }
+  });
+});
+
 describe("cross-hospital reference guards (triggers)", () => {
   it("rejects a hospital A row that references hospital B's patient — even for the owner role", async () => {
     await expect(owner.query(

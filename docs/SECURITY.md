@@ -40,9 +40,13 @@ Changes made:
 | Value | Where it leaked | Still in use? | Action |
 |---|---|---|---|
 | `AUTH_SECRET` in `hms-env.txt` | Public GitHub history (commit `be45684`) | **No** — the local `.env` uses a different value, and no code currently signs anything with `AUTH_SECRET` | Treat as burned. Never reuse it. |
-| `AUTH_SECRET` in the local `.env` | Equals the public placeholder from `.env.example` | Local only | **Rotate**: set a new random value locally and in Vercel. |
-| `SEED_DEMO_PASSWORD` in `hms-env.txt` (also hard-coded in the old e2e test) | Public GitHub history | **No** — verified against every account hash in the live database: it matches none | Treat as public; the seed now refuses it. |
-| Supabase database password | Not committed (only in the untracked `.env`) | Yes | Rotate if `.env` was ever shared; otherwise no action. The `DATABASE_URL` in `hms-env.txt` contained only a placeholder password. |
+| `AUTH_SECRET` in the local `.env` | Was equal to the public placeholder from `.env.example` | Local only | **Rotated 2026-11-19** to a new random value (verified: no longer the placeholder). Vercel has its own random value generated at first deployment. |
+| `SEED_DEMO_PASSWORD` in `hms-env.txt` (also hard-coded in the old e2e test) | Public GitHub history | **No** — re-verified 2026-11-19 against all 27 account hashes in the live database: it matches none | Treat as public; the seed now refuses it. |
+| Supabase database password | Not committed (only in the untracked `.env`) | Yes | Rotate if `.env` was ever shared; otherwise no action. The `DATABASE_URL` in `hms-env.txt` pointed at `localhost` with a placeholder password (re-verified: different host, user and password from the live one). |
+
+The repository is **public**. `hms-env.txt` is reachable from `main` and every branch created after commit
+`be45684` (it was deleted in `9fab7cf`). No other tracked file contains environment values: only
+`.env.example` (placeholders) is tracked, and `.gitignore` excludes `.env`, `.env.*` and `*.env.txt`.
 
 ### Git history
 
@@ -114,10 +118,58 @@ Changes:
 * `20261117000200_tenant_isolation_rls`: real RLS policies for hospital isolation, enforced through the
   restricted role `hms_app` (see MULTI_TENANCY.md). No blanket "allow all" policies on hospital data.
 
-Recommended manual step: in the Supabase dashboard → Project Settings → Data API, remove `public` from the
-exposed schemas (or disable the Data API) since the app does not use it. Default privileges owned by
-`supabase_admin` cannot be changed by the `postgres` role; the revoke above covers objects created by the
-app's migrations.
+* `20261119000000_current_hospital_id_search_path`: regenerated tenant-security SQL. The only change is
+  `hms_internal.current_hospital_id()`: explicit `SECURITY INVOKER` (it must read the *caller's*
+  `app.hospital_id`), `SET search_path = pg_catalog`, and a schema-qualified `pg_catalog.current_setting`
+  call — fixes the Security Advisor warning "Function Search Path Mutable". Policies call it as
+  `(SELECT hms_internal.current_hospital_id())`, evaluated once per statement, so the `SET` clause adds no
+  per-row cost. Tested as `hms_app`, including that a `current_setting` planted on the caller's
+  `search_path` cannot hijack it.
+
+**Data API: disabled** (Supabase dashboard → Integrations → Data API → "Enable Data API" off, verified
+2026-11-19; `/rest/v1/` answers 503). No schema is exposed. The app never uses it: there is no
+`@supabase/*` client, no browser-side Supabase access, and no `NEXT_PUBLIC_SUPABASE_*` variable. File
+storage uses the separate Storage API from the server only (`lib/storage`). If the Data API is ever
+re-enabled, expose only a dedicated schema — never `public`. Default privileges owned by `supabase_admin`
+cannot be changed by the `postgres` role; the revoke above covers objects created by the app's migrations.
+
+Security Advisor after these changes: see docs/STATUS.md (verification). The three "RLS Enabled No Policy"
+notices (`PasswordResetToken`, `RateLimitBucket`, `_prisma_migrations`) are intentional: RLS without a
+policy means deny-all for `hms_app`/`anon`/`authenticated`; only the server's owner role uses them.
+
+### Privileged database access (owner role, `BYPASSRLS`)
+
+There is one connection (Supabase `postgres` via the pooler). Hospital-scoped work switches to `hms_app`
+with **transaction-local** `set_config` (ends at COMMIT/ROLLBACK, so the transaction pooler cannot carry a
+hospital into another request — covered by a database test). `systemPrisma` is that connection *without*
+the switch. Every module allowed to use it is pinned by `tests/unit/privileged-access.test.js`:
+
+| Category | Why the owner role is needed | Where |
+|---|---|---|
+| Pre-authentication | No user/hospital is known yet; accounts are global | `api/auth/login`, `forgot-password`, `reset-password`, `lib/auth/rate-limit.js` |
+| Own account | Update own password, revoke own sessions | `api/auth/change-password` |
+| Sessions & memberships | A user's memberships span hospitals; the session decides the hospital | `lib/auth/session.js` (session CRUD, `activeMemberships`), `api/auth/hospital` (session update) |
+| Global uniqueness / counts | Emails are unique across hospitals; existence or count only, never data | `lib/services/staff.js`, `lib/services/users.js` |
+| Platform administration | Works above hospitals (Platform Administrators only, `route({ platform: true })`) | `lib/services/platform.js` |
+| Platform-level audit | Rows with `hospitalId` NULL | `lib/audit.js` |
+| Liveness | `SELECT 1`, no table access | `api/health` |
+| Maintenance (not app runtime) | Migrations, seed, bootstrap scripts | `prisma/migrations`, `prisma/seed.js`, `scripts/*` |
+
+Moved to `hms_app` on 2026-11-19: the per-request role/permission/staff/patient lookup
+(`loadHospitalAccess`, now run inside the chosen hospital's context) and audit rows that belong to a known
+hospital (sign-in, hospital switch). Remaining owner-role queries touch only identity tables (`User`,
+`Session`, `PasswordResetToken`, `RateLimitBucket`, `HospitalMembership`), `Hospital`, and platform audit rows.
+
+**Plan for a dedicated login role (not yet done — needs a new secret and a Vercel change):**
+1. Create `hms_system` (`LOGIN NOBYPASSRLS NOSUPERUSER`) with a strong password; `GRANT hms_app TO hms_system`.
+2. Grant it only the identity tables above (SELECT/INSERT/UPDATE/DELETE as each use needs), SELECT/INSERT/
+   UPDATE on `Hospital`, INSERT on `AuditLog`, and add RLS policies `TO hms_system` for those tables.
+3. Platform hospital provisioning writes hospital-owned rows: run it inside `runWithTenant` for the new
+   hospital (as `hms_app`) instead of the owner role.
+4. Add `DATABASE_URL` for `hms_system` (pooler user `hms_system.<project-ref>`) in Vercel and `.env`; keep
+   the `postgres` URL only for `prisma migrate deploy` and scripts (e.g. `MIGRATION_DATABASE_URL`).
+5. Rehearse with `scripts/db/verify-migrations.mjs`, run `npm run test:db` + e2e, deploy, then confirm with
+   `select current_user` in `/api/health` that runtime no longer uses `postgres`.
 
 ## 4. Referential integrity
 
@@ -153,9 +205,10 @@ app's migrations.
 
 ## 6. Remaining risks / known limitations
 
-* The connection role still has `BYPASSRLS`; `systemPrisma` uses it for authentication and platform
-  administration. A bug in that (small, reviewable) code is not stopped by RLS. Using a dedicated login role
-  without `BYPASSRLS` for the app and keeping `postgres` for migrations would remove this.
+* The connection role still has `BYPASSRLS`; `systemPrisma` uses it for authentication, sessions and
+  platform administration (inventory and transition plan in §3 "Privileged database access"). A bug in
+  that small, test-pinned code is not stopped by RLS until the dedicated `hms_system` role is introduced.
+* `hms-env.txt` remains in the public Git history (no active value in it); see §1 for the optional purge.
 * Standalone queries cost an extra round trip for the database context (see MULTI_TENANCY.md).
 * `User` rows are global: a hospital administrator can rename/reset only accounts that belong *only* to
   their hospital; shared accounts are managed by a Platform Administrator.
